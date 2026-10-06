@@ -40,6 +40,12 @@ export function describeToolCall(tool: string, input: unknown): string {
       const edits = Array.isArray(args.edits) ? (args.edits as EditOperation[]) : []
       return diffText(path, edits)
     }
+    case "todo": {
+      const index = typeof args.index === "number" ? args.index : "?"
+      const status = text(args.status) ?? "done"
+      const note = text(args.note)
+      return `#${index} ${status}${note ? ` · ${note}` : ""}`
+    }
     case "push":
       return firstLine(text(args.title) ?? text(args.why) ?? "new task frame")
     case "spawn":

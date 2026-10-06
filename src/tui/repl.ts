@@ -4,7 +4,7 @@ import {
   createCliRenderer,
   dim,
   fg,
-  InputRenderable,
+  TextareaRenderable,
   italic,
   StyledText,
   TextRenderable,
@@ -33,6 +33,8 @@ export type ReplOptions = {
  * compact status + prompt footer stays pinned at the bottom. Slash commands
  * replace the settings menu.
  */
+export const PROMPT_HEIGHT = 3
+
 export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   let result: UiResult = "quit"
   let resolveDone: (value: UiResult) => void = () => {}
@@ -63,7 +65,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const historyLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const dashboard = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const live = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
-  const promptRow = new BoxRenderable(renderer, { width: "100%", height: 1, flexDirection: "row" })
+  const promptRow = new BoxRenderable(renderer, { width: "100%", height: PROMPT_HEIGHT, flexDirection: "row" })
   promptRow.add(
     new TextRenderable(renderer, {
       content: concat([fg(theme.green)("❯ ")]),
@@ -73,8 +75,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       width: 2,
     }),
   )
-  const input = new InputRenderable(renderer, {
-    placeholder: "message, or /help",
+  const input = new TextareaRenderable(renderer, {
+    placeholder: "message, or /help   (shift+enter for a new line)",
+    height: PROMPT_HEIGHT,
+    wrapMode: "word",
     backgroundColor: theme.bg,
     focusedBackgroundColor: theme.bg,
     textColor: theme.fg,
@@ -82,8 +86,19 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     placeholderColor: theme.gray,
     cursorColor: theme.green,
     flexGrow: 1,
+    keyBindings: [
+      { name: "return", action: "submit" },
+      { name: "kpenter", action: "submit" },
+      { name: "linefeed", action: "submit" },
+      { name: "return", shift: true, action: "newline" },
+    ],
   })
   promptRow.add(input)
+  input.onSubmit = () => {
+    const value = input.plainText
+    input.setText("")
+    void submit(value)
+  }
   footer.add(historyLine)
   footer.add(dashboard)
   footer.add(live)
@@ -226,7 +241,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
     // Only touch the split-footer size when it actually changes — resizing it on
     // every tick disturbs the scroll region.
-    const total = stripeRows + rows + 3
+    const total = stripeRows + rows + 5
     if (total !== footerRows) {
       footerRows = total
       footer.height = total
@@ -326,11 +341,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     }
   }
 
-  input.on("enter", (value: string) => {
-    input.value = ""
-    void submit(value)
-  })
-
   const history: string[] = []
   let historyIndex = 0
 
@@ -339,13 +349,13 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       key.preventDefault()
       key.stopPropagation()
       if (opts.runtime.isRunning) opts.runtime.interrupt()
-      else if (input.value.length > 0) input.value = ""
+      else if (input.plainText.length > 0) input.setText("")
       return
     }
 
     const state = opts.runtime.snapshot()
     const choiceActive = state.mode === "waiting_for_user" && (state.userRequest?.choices?.length ?? 0) > 0
-    const inputEmpty = input.value.length === 0
+    const inputEmpty = input.plainText.length === 0
 
     // Vim motions drive the choice list while the prompt is empty, matching the
     // panes interface. With text in the prompt, j/k/l are ordinary characters.
@@ -374,14 +384,14 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
     if (key.name === "up" && inputEmpty && history.length > 0) {
       historyIndex = Math.max(0, historyIndex - 1)
-      input.value = history[historyIndex] ?? ""
+      input.setText(history[historyIndex] ?? "")
       key.preventDefault()
       key.stopPropagation()
       return
     }
     if (key.name === "down" && inputEmpty) {
       historyIndex = Math.min(history.length, historyIndex + 1)
-      input.value = history[historyIndex] ?? ""
+      input.setText(history[historyIndex] ?? "")
       key.preventDefault()
       key.stopPropagation()
     }
