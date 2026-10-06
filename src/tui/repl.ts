@@ -6,7 +6,6 @@ import {
   fg,
   InputRenderable,
   italic,
-  reverse,
   StyledText,
   TextRenderable,
 } from "@opentui/core"
@@ -16,6 +15,7 @@ import { applyTheme, theme } from "./theme.ts"
 import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
+import { renderChip, statusChip } from "./status.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -192,11 +192,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const updateFooter = (state: AgentState): void => {
-    const mode = state.mode === "waiting_for_user" ? "WAITING" : state.mode.toUpperCase()
     const m = state.metrics
     const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length} · files ${state.files.length}`
     status.content = concat([
-      reverse(bold(` ${mode} `)),
+      renderChip(statusChip(state)),
       plain("  "),
       dim(meta),
       plain("   "),

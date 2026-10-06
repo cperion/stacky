@@ -122,6 +122,10 @@ export type StreamingState = {
 
 export type AgentState = {
   mode: AgentMode
+  /** True while the automatic loop is running (model call or tool execution). */
+  running: boolean
+  /** Tool currently executing, if any. */
+  activeTool?: string
   conversation: ConversationEntry[]
   stack: TaskFrame[]
   closedFrames: ClosedFrame[]

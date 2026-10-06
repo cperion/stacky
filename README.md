@@ -116,7 +116,12 @@ FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
 The dashboard is one unified panel: the top task frame (`TASK`/`SCOPE`/`DONE`, plus
 `PARENT` when nested) with the file working set listed underneath; the prompt and the
 status bar sit below it (status last). Agent messages carry no role marker — the agent
-is the default voice, and the user's green bar + tint is what marks your turns. Values **wrap**
+is the default voice, and the user's green bar + tint is what marks your turns.
+
+The status bar leads with a compact **state chip** — `READY` (idle at the prompt),
+`PLAN` (framing), `RUN` (executing), `THINK` (streaming reasoning), `WRITE` (streaming
+answer), `TOOL <name>` (running a tool), `WAIT` (needs you) — colour-coded as a
+reverse-video bar so the whole agent state is readable at a glance. Values **wrap**
 rather than being clipped, and the panel height grows with the content (collapse it
 with `/dashboard off`). `--ui` can switch to the panes interface.
 

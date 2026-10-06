@@ -66,6 +66,7 @@ export class AgentRuntime {
   private userRequest?: UserRequestRecord
   private observation = ""
   private running = false
+  private activeTool?: string
   private protocolErrors = 0
   private streaming?: StreamingState
   private abortController?: AbortController
@@ -171,6 +172,8 @@ export class AgentRuntime {
   snapshot(): AgentState {
     return {
       mode: this.mode,
+      running: this.running,
+      ...(this.activeTool ? { activeTool: this.activeTool } : {}),
       conversation: [...this.conversation.entries()],
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
@@ -422,21 +425,28 @@ export class AgentRuntime {
     this.protocolErrors = 0
     this.metrics.toolCalls += 1
 
-    switch (action.tool) {
-      case "bash":
-        return this.handleBash(action.input.command, action.input.timeoutMs)
-      case "read":
-        return this.handleRead(action.input.path)
-      case "edit":
-        return this.handleEdit(action.input.path, action.input.edits)
-      case "push":
-        return this.handlePush(action.input)
-      case "spawn":
-        return this.handleSpawn(action.input)
-      case "pop":
-        return this.handlePop(action.input)
-      case "user":
-        return this.handleUser(action.input)
+    this.activeTool = action.tool
+    this.emitState()
+    try {
+      switch (action.tool) {
+        case "bash":
+          return await this.handleBash(action.input.command, action.input.timeoutMs)
+        case "read":
+          return this.handleRead(action.input.path)
+        case "edit":
+          return this.handleEdit(action.input.path, action.input.edits)
+        case "push":
+          return this.handlePush(action.input)
+        case "spawn":
+          return await this.handleSpawn(action.input)
+        case "pop":
+          return this.handlePop(action.input)
+        case "user":
+          return this.handleUser(action.input)
+      }
+    } finally {
+      this.activeTool = undefined
+      this.emitState()
     }
   }
 

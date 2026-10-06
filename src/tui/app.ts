@@ -1,4 +1,4 @@
-import { bold, BoxRenderable, createCliRenderer, dim, reverse, TextRenderable } from "@opentui/core"
+import { BoxRenderable, createCliRenderer, dim, TextRenderable } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState } from "../agent/types.ts"
 import { TaskPane } from "./task-pane.ts"
@@ -9,6 +9,7 @@ import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { applyTheme, theme } from "./theme.ts"
 import { concat, plain } from "./render.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
+import { renderChip, statusChip } from "./status.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 
 export type AppOptions = {
@@ -358,13 +359,12 @@ function buildFooter(
   if (opts.notice && state.conversation.length === 0) return concat([dim(` ${opts.notice}`)])
 
   const busy = state.streaming?.active === true
-  const mode = state.mode === "waiting_for_user" ? "WAITING" : state.mode.toUpperCase()
   const m = state.metrics
   const meta = `${opts.label}${opts.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length}`
   const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
 
   return concat([
-    reverse(bold(` ${mode} `)),
+    renderChip(statusChip(state)),
     plain("  "),
     dim(meta),
     plain("   "),
