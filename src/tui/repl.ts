@@ -78,10 +78,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     flexGrow: 1,
   })
   promptRow.add(input)
-  footer.add(status)
   footer.add(dashboard)
   footer.add(live)
   footer.add(promptRow)
+  footer.add(status)
   renderer.root.add(footer)
   input.focus()
 
@@ -131,7 +131,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "user":
         return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "agent":
-        return concat([fg(theme.cyan)("▌ "), bold("Agent"), plain("\n"), renderMarkdown(entry.text, width, 2)])
+        return renderMarkdown(entry.text, width, 0)
       case "thinking":
         if (!showThinking) return undefined
         return concat([

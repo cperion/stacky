@@ -150,7 +150,9 @@ export class ChatPane {
       case "user":
         return concat([this.bar(fg(theme.green), "You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "agent":
-        return concat([this.bar(fg(theme.cyan), "Agent"), plain("\n"), renderMarkdown(entry.text, width, 2)])
+        // The agent is the default voice: no marker. The user's green bar (and the
+        // shaded tint on user input) is what distinguishes the two.
+        return renderMarkdown(entry.text, width, 0)
       case "thinking":
         return concat([
           this.bar(fg(theme.magenta), "Thinking"),
@@ -186,9 +188,7 @@ export class ChatPane {
     }
     if (streaming.text) {
       if (parts.length > 0) parts.push(plain("\n"))
-      parts.push(this.bar(fg(theme.cyan), "Agent"))
-      parts.push(plain("\n"))
-      parts.push(plain(block(streaming.text, width, 2)))
+      parts.push(renderMarkdown(streaming.text, width, 0))
       parts.push(plain("\n"))
     }
     if (streaming.tool) {

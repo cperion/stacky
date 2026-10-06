@@ -102,20 +102,21 @@ stacky  ·  REPL mode. Type a task, or /help for commands.
   │ The failure is in the token parser, so I should read it first.
   → read  src/token.ts
 ▌ token.ts · 84 lines · ~900 tokens · now in the working set
-▌ Agent
   Fixed it. Tests pass.
 
- EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
 TASK   Fix the failing token test. The auth test fails only when refresh tokens are expired.
 SCOPE  Inspect timestamp parsing and normalization only.
 DONE   Determine whether parsing is responsible, with evidence for the parent frame.
 ────────────────────────────────────────────────────────────────────────────────────────
 FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
 ❯ _
+ EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
 ```
 
 The dashboard is one unified panel: the top task frame (`TASK`/`SCOPE`/`DONE`, plus
-`PARENT` when nested) with the file working set listed underneath. Values **wrap**
+`PARENT` when nested) with the file working set listed underneath; the prompt and the
+status bar sit below it (status last). Agent messages carry no role marker — the agent
+is the default voice, and the user's green bar + tint is what marks your turns. Values **wrap**
 rather than being clipped, and the panel height grows with the content (collapse it
 with `/dashboard off`). `--ui` can switch to the panes interface.
 
