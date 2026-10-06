@@ -13,6 +13,8 @@ export type StackyConfig = {
   showThinking: boolean
   /** Which interface to launch. */
   ui: "panes" | "repl"
+  /** REPL: show the task/files dashboard above the prompt. */
+  replDashboard: boolean
   /** Colour scheme: follow the terminal, or force one. */
   theme: "auto" | "dark" | "light"
   fileBudgetTokens: number
@@ -26,6 +28,7 @@ export function defaultConfig(): StackyConfig {
     thinking: false,
     showThinking: true,
     ui: "repl",
+    replDashboard: true,
     theme: "auto",
     fileBudgetTokens: 24_000,
     conversationBudgetTokens: 32_000,

@@ -100,6 +100,18 @@ const COMMANDS: Command[] = [
     },
   },
   {
+    name: "dashboard",
+    aliases: ["dash"],
+    usage: "/dashboard [on|off]",
+    description: "toggle the task/files dashboard (REPL)",
+    run: (arg, ctx) => {
+      const value = arg ? arg === "on" : !ctx.settings.config.replDashboard
+      ctx.settings.config.replDashboard = value
+      ctx.settings.persist()
+      ctx.print(`Dashboard ${value ? "on" : "off"}.`)
+    },
+  },
+  {
     name: "status",
     usage: "/status",
     description: "runtime status",

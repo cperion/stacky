@@ -26,7 +26,6 @@ export type ReplOptions = {
   notice?: string
 }
 
-const FOOTER_HEIGHT = 5
 
 /**
  * REPL interface: output flows into the terminal's real scrollback and only a
@@ -43,7 +42,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const renderer = await createCliRenderer({
     screenMode: "split-footer",
     externalOutputMode: "capture-stdout",
-    footerHeight: FOOTER_HEIGHT,
+    footerHeight: 8,
     exitOnCtrlC: true,
     targetFps: 30,
     useMouse: false,
@@ -52,18 +51,25 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   await applyTheme(renderer, opts.settings.config.theme)
 
-  // ---- footer -------------------------------------------------------------
+  // ---- footer (dashboard) -------------------------------------------------
 
-  const footer = new BoxRenderable(renderer, { width: "100%", height: FOOTER_HEIGHT, flexDirection: "column" })
-  const status = new TextRenderable(renderer, {
-    content: "",
-    fg: theme.fg,
-    bg: theme.bg,
-    wrapMode: "none",
-    height: 1,
-  })
-  const taskLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
-  const filesLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
+  const MAX_COLUMNS = 6
+
+  const footer = new BoxRenderable(renderer, { width: "100%", height: 8, flexDirection: "column" })
+  const status = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
+
+  const columnsRow = new BoxRenderable(renderer, { width: "100%", height: 0, flexDirection: "row", visible: false })
+  const taskCol = new BoxRenderable(renderer, { width: "36%", height: "100%", flexDirection: "column" })
+  const taskBody = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
+  const divider = new BoxRenderable(renderer, { width: 2, height: "100%", border: ["left"], borderColor: theme.dim })
+  const filesCol = new BoxRenderable(renderer, { flexGrow: 1, height: "100%", flexDirection: "column" })
+  const filesBody = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
+  taskCol.add(taskBody)
+  filesCol.add(filesBody)
+  columnsRow.add(taskCol)
+  columnsRow.add(divider)
+  columnsRow.add(filesCol)
+
   const live = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
   const promptRow = new BoxRenderable(renderer, { width: "100%", height: 1, flexDirection: "row" })
   promptRow.add(
@@ -87,12 +93,26 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   })
   promptRow.add(input)
   footer.add(status)
-  footer.add(taskLine)
-  footer.add(filesLine)
+  footer.add(columnsRow)
   footer.add(live)
   footer.add(promptRow)
   renderer.root.add(footer)
   input.focus()
+
+  /** Size the footer: a task/files dashboard above the prompt when there is room. */
+  const layoutFooter = (): void => {
+    const height = renderer.terminalHeight
+    const dashboard = opts.settings.config.replDashboard
+    const columns = dashboard ? Math.max(0, Math.min(MAX_COLUMNS, Math.floor(height * 0.3) - 2)) : 0
+    const total = columns > 0 ? columns + 3 : 3
+    renderer.footerHeight = total
+    footer.height = total
+    columnsRow.height = columns
+    columnsRow.visible = columns > 0
+    taskBody.height = columns
+    filesBody.height = columns
+    updateFooter(opts.runtime.snapshot())
+  }
 
   // ---- scrollback output --------------------------------------------------
 
@@ -201,41 +221,57 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const updateFooter = (state: AgentState): void => {
-    const width = rendererWidth()
     const mode = state.mode === "waiting_for_user" ? "WAITING" : state.mode.toUpperCase()
     const m = state.metrics
     const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
     status.content = concat([reverse(bold(` ${mode} `)), plain("  "), dim(meta), plain("   "), dim("ctrl+c quit · Esc interrupts · /help")])
 
-    // Current task stack (top frame) — always visible in the REPL.
-    const top = state.stack[state.stack.length - 1]
-    if (top) {
-      const depthLabel = state.stack.length > 1 ? `   depth ${state.stack.length}` : ""
-      taskLine.content = concat([
-        fg(theme.blue)("▌ "),
-        bold(fg(theme.blue)("TASK")),
-        plain("  "),
-        plain(clip(firstLine(top.why), width - 12 - depthLabel.length)),
-        depthLabel ? dim(depthLabel) : plain(""),
-      ])
-    } else {
-      taskLine.content = concat([dim("▌ "), dim("no active frame")])
-    }
+    // Task / files dashboard columns (hidden in compact mode).
+    const columns = columnsRow.height
+    const terminal = renderer.width
+    const taskWidth = Math.max(12, Math.floor(terminal * 0.36) - 2)
+    const filesWidth = Math.max(12, terminal - Math.floor(terminal * 0.36) - 3)
 
-    // Current working set — the files the model can actually see.
-    const files = state.files.map((file) => file.path)
-    const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
-    const usage = files.length > 0 ? `   ${formatTokens(used)}/${formatTokens(opts.settings.config.fileBudgetTokens)}` : ""
-    filesLine.content =
-      files.length > 0
-        ? concat([
-            fg(theme.cyan)("◆ "),
-            bold(fg(theme.cyan)("FILES")),
-            plain("  "),
-            dim(clip(files.join("  "), width - 12 - usage.length)),
-            dim(usage),
-          ])
-        : concat([dim("◆ "), dim("no files in context")])
+    const top = state.stack[state.stack.length - 1]
+    const taskParts: Part[] = [
+      concat([
+        fg(theme.blue)("▌ "),
+        bold(fg(theme.blue)("TASK STACK")),
+        plain("  "),
+        dim(`depth ${state.stack.length}`),
+      ]),
+    ]
+    if (top) {
+      taskParts.push(plain("\n"), dim("Why   "), plain(clip(firstLine(top.why), taskWidth - 6)))
+      taskParts.push(plain("\n"), dim("Scope "), plain(clip(firstLine(top.scope), taskWidth - 6)))
+      taskParts.push(plain("\n"), dim("Done  "), plain(clip(firstLine(top.definitionOfDone), taskWidth - 6)))
+      const parent = state.stack[state.stack.length - 2]
+      if (parent) taskParts.push(plain("\n"), dim("▸ "), dim(clip(firstLine(parent.why), taskWidth - 2)))
+    } else {
+      taskParts.push(plain("\n"), dim("no active frame"))
+    }
+    taskBody.content = concat(taskParts)
+
+    const files = state.files
+    const used = files.reduce((total, file) => total + file.tokenCount, 0)
+    const filesParts: Part[] = [
+      concat([
+        fg(theme.cyan)("◆ "),
+        bold(fg(theme.cyan)("FILES")),
+        plain("  "),
+        dim(`${files.length} · ${formatTokens(used)}/${formatTokens(opts.settings.config.fileBudgetTokens)}`),
+      ]),
+    ]
+    const rows = Math.max(0, columns - 1)
+    const nameWidth = Math.max(4, filesWidth - 7)
+    for (const file of files.slice(0, rows)) {
+      filesParts.push(plain("\n"))
+      filesParts.push(plain(clip(file.path, nameWidth).padEnd(nameWidth)))
+      filesParts.push(dim(formatTokens(file.tokenCount)))
+    }
+    if (files.length > rows) filesParts.push(plain("\n"), dim(`+${files.length - rows} more`))
+    else if (files.length === 0) filesParts.push(plain("\n"), dim("no files in context"))
+    filesBody.content = concat(filesParts)
 
     live.content = liveContent(state)
   }
@@ -408,6 +444,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     if (event.type === "state.changed" || event.type === "conversation.added") onState()
   })
 
+  layoutFooter()
+  renderer.on("resize", () => layoutFooter())
   onState()
 
   if (opts.notice) print([dim(opts.notice)])
