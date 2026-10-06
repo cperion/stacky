@@ -1,5 +1,4 @@
 import {
-  bg,
   bold,
   BoxRenderable,
   createCliRenderer,
@@ -14,7 +13,7 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { theme } from "./theme.ts"
-import { block, clampLines, concat, fit, padLines, plain, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 
@@ -135,7 +134,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "action":
         return actionParts(entry.text, width)
       case "observation":
-        return concat([bg(theme.panel)(padLines(block(clampLines(entry.text, 16), width, 2, "│"), width))])
+        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
     }

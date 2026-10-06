@@ -126,11 +126,11 @@ In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the 
 
 Switch with `--ui panes|repl` on the command line as well.
 
-### Tool-output panel
+### Tool output
 
-Tool output is drawn on a subtle ANSI background (`48;5;8`, the terminal's bright
-black) with the default foreground, so it reads as a distinct block while still
-following the terminal palette rather than a hardcoded colour.
+Tool output is drawn as a blockquote: a coloured `▌` bar on the left and the text at
+the **default foreground**. No background colour is painted, so contrast stays maximal
+on any terminal theme — the bar uses an ANSI palette index, never a hardcoded RGB.
 
 ## Streaming & thinking
 
