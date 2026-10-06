@@ -26,6 +26,7 @@ const { values, positionals } = parseArgs({
     "conversation-budget": { type: "string" },
     config: { type: "string" },
     ui: { type: "string" },
+    theme: { type: "string" },
     session: { type: "string" },
     trace: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
@@ -46,6 +47,7 @@ if (values.provider) config.provider = values.provider as ProviderName
 if (values.model) config.model = values.model
 if (values.thinking !== undefined) config.thinking = values.thinking
 if (values.ui === "panes" || values.ui === "repl") config.ui = values.ui
+if (values.theme === "auto" || values.theme === "dark" || values.theme === "light") config.theme = values.theme
 if (values["file-budget"]) config.fileBudgetTokens = numberOption(values["file-budget"], config.fileBudgetTokens)
 if (values["conversation-budget"])
   config.conversationBudgetTokens = numberOption(values["conversation-budget"], config.conversationBudgetTokens)
@@ -229,6 +231,7 @@ Options:
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
   --config <path>          Config file (default: ${configPath()})
   --ui <mode>              panes | repl (default: from config, usually panes)
+  --theme <mode>           auto | dark | light (light = black on white)
   --session <path>         Persist/restore task state (JSON). File contents are never stored.
   --trace <path>           Append a JSONL execution trace
   -h, --help               Show this help

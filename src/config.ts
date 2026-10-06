@@ -13,6 +13,8 @@ export type StackyConfig = {
   showThinking: boolean
   /** Which interface to launch. */
   ui: "panes" | "repl"
+  /** Colour scheme: follow the terminal, or force one. */
+  theme: "auto" | "dark" | "light"
   fileBudgetTokens: number
   conversationBudgetTokens: number
 }
@@ -24,6 +26,7 @@ export function defaultConfig(): StackyConfig {
     thinking: false,
     showThinking: true,
     ui: "panes",
+    theme: "auto",
     fileBudgetTokens: 24_000,
     conversationBudgetTokens: 32_000,
   }

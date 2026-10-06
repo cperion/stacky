@@ -1,5 +1,6 @@
 import type { MenuItem } from "./menu.ts"
 import type { SettingsController, UiMode } from "./settings.ts"
+import type { StackyConfig } from "../config.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 import { hasApiKey, type ProviderName } from "../llm/providers.ts"
 
@@ -63,6 +64,17 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
       value: () => cfg.ui,
       options: () => ["panes", "repl"],
       set: (v) => ctx.switchUi(v as UiMode),
+    },
+    {
+      kind: "choice",
+      label: "Theme",
+      hint: "restart to apply",
+      value: () => cfg.theme,
+      options: () => ["auto", "dark", "light"],
+      set: (v) => {
+        cfg.theme = v as StackyConfig["theme"]
+        ctx.persist()
+      },
     },
     { kind: "separator", label: "Context" },
     {

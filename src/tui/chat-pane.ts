@@ -12,7 +12,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
-import { theme, scrollbarTheme } from "./theme.ts"
+import { theme, scrollbarOptions } from "./theme.ts"
 import { concat, block, paneInner, clampLines, fit, header, paneRule, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
@@ -47,7 +47,7 @@ export class ChatPane {
       scrollX: false,
       stickyScroll: true,
       stickyStart: "bottom",
-      scrollbarOptions: scrollbarTheme,
+      scrollbarOptions: scrollbarOptions(),
     })
     this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "word" })
     this.scroll.add(this.text)

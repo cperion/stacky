@@ -1,42 +1,109 @@
-import { RGBA } from "@opentui/core"
+import { RGBA, type CliRenderer, type ThemeMode } from "@opentui/core"
+
+/** How the user wants the interface to be themed. */
+export type ThemeModeSetting = "auto" | "dark" | "light"
+
+export type Theme = {
+  /** Base surface: the terminal background (or white in light mode). */
+  bg: RGBA
+  /** Default foreground (or black in light mode). */
+  fg: RGBA
+  /** ONE shared tint for user input and tool output, derived from `bg`. */
+  shade: RGBA
+  red: RGBA
+  green: RGBA
+  yellow: RGBA
+  blue: RGBA
+  magenta: RGBA
+  cyan: RGBA
+  dim: RGBA
+  gray: RGBA
+}
+
+const DARK_FALLBACK_BG = "#1a1b26"
+const DARK_FALLBACK_FG = "#e6e6e6"
+const LIGHT_BG = "#ffffff"
+const LIGHT_FG = "#000000"
+
+function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "dim" | "gray"> {
+  // ANSI palette indices stay themeable in both modes.
+  return {
+    red: RGBA.fromIndex(1),
+    green: RGBA.fromIndex(2),
+    yellow: RGBA.fromIndex(3),
+    blue: RGBA.fromIndex(4),
+    magenta: RGBA.fromIndex(5),
+    cyan: RGBA.fromIndex(6),
+    dim: RGBA.fromIndex(8),
+    gray: RGBA.fromIndex(8),
+  }
+}
+
+/** Shift a colour a little towards the foreground's direction for a subtle tint. */
+function deriveShade(background: RGBA, light: boolean): RGBA {
+  const [r, g, b] = background.toInts()
+  const delta = light ? -14 : 22
+  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value + delta)))
+  return RGBA.fromInts(clamp(r), clamp(g), clamp(b))
+}
+
+export function buildTheme(mode: ThemeMode, background?: string | null, foreground?: string | null): Theme {
+  const light = mode === "light"
+  const bg = light
+    ? RGBA.fromHex(LIGHT_BG)
+    : background
+      ? RGBA.fromHex(background)
+      : RGBA.fromHex(DARK_FALLBACK_BG)
+  const fg = light
+    ? RGBA.fromHex(LIGHT_FG)
+    : foreground
+      ? RGBA.fromHex(foreground)
+      : RGBA.fromHex(DARK_FALLBACK_FG)
+  return { ...accents(), bg, fg, shade: deriveShade(bg, light) }
+}
+
+/** Mutable module-level theme; importers see the live value. */
+export let theme: Theme = buildTheme("dark")
 
 /**
- * Terminal-native palette.
- *
- * Nothing here is a fixed RGB colour:
- *  - `fg` / `bg` are the terminal's default foreground and background, emitted
- *    as SGR 39 / 49, so the user's own theme shows through untouched.
- *  - accents are ANSI palette *indices* (SGR 38;5;N), which the terminal maps to
- *    whatever colours the user has configured.
- *  - emphasis is expressed with the `bold` / `dim` text attributes, not colour.
- *
- * No background colour is ever painted, and every renderable must be given an
- * explicit `fg` / `borderColor` / `titleColor`, because OpenTUI's built-in
- * default is truecolor white — which would be invisible on a light terminal.
+ * Resolve the mode: an explicit setting, or whatever the terminal reports.
+ * Then (for dark mode) read the terminal's real background so the shared shade
+ * is derived from the user's own colour scheme instead of a fixed grey.
  */
-export const theme = {
-  fg: RGBA.defaultForeground(),
-  bg: RGBA.defaultBackground(),
+export async function applyTheme(renderer: CliRenderer, setting: ThemeModeSetting): Promise<ThemeMode> {
+  let mode: ThemeMode
+  if (setting === "dark" || setting === "light") {
+    mode = setting
+  } else if (renderer.themeMode) {
+    mode = renderer.themeMode
+  } else {
+    try {
+      mode = (await renderer.waitForThemeMode(150)) ?? "dark"
+    } catch {
+      mode = "dark"
+    }
+  }
 
-  // ANSI palette indices (0-7 normal, 8-15 bright).
-  red: RGBA.fromIndex(1),
-  green: RGBA.fromIndex(2),
-  yellow: RGBA.fromIndex(3),
-  blue: RGBA.fromIndex(4),
-  magenta: RGBA.fromIndex(5),
-  cyan: RGBA.fromIndex(6),
-  /** Bright black: AA muted tone for structure (borders, rules, secondary text). */
-  dim: RGBA.fromIndex(8),
-  gray: RGBA.fromIndex(8),
-  /**
-   * One shared background for user input and tool output (ANSI 256 greyscale).
-   * A subtle lift off the default background; agent text keeps the default.
-   */
-  shade: RGBA.fromIndex(236),
-} as const
+  let background: string | null = null
+  let foreground: string | null = null
+  if (mode === "dark") {
+    try {
+      const palette = await renderer.getPalette({ timeout: 200 })
+      background = palette.defaultBackground ?? null
+      foreground = palette.defaultForeground ?? null
+    } catch {
+      // Terminal did not answer the palette query — fall back to defaults.
+    }
+  }
 
-/** Terminal-native scrollbar colours, shared by every pane. */
-export const scrollbarTheme = {
-  trackOptions: { foregroundColor: theme.gray, backgroundColor: theme.bg },
-  arrowOptions: { foregroundColor: theme.fg, backgroundColor: theme.bg },
-} as const
+  theme = buildTheme(mode, background, foreground)
+  return mode
+}
+
+/** Terminal-native scrollbar colours, resolved lazily so they track the theme. */
+export function scrollbarOptions() {
+  return {
+    trackOptions: { foregroundColor: theme.gray, backgroundColor: theme.bg },
+    arrowOptions: { foregroundColor: theme.fg, backgroundColor: theme.bg },
+  }
+}

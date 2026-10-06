@@ -126,14 +126,25 @@ In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the 
 
 Switch with `--ui panes|repl` on the command line as well.
 
-### Shading
+### Shading and theme modes
 
-One ANSI background colour is shared by **user input** and **tool output**
-(`48;5;236` — a subtle lift off the default background, padded into a solid
-rectangle). Agent messages and thinking keep the terminal's default background, so
-the transcript reads as *your turns + tool results* on a tint, and *the agent's
-words* on the theme's own background. Only one colour is used, and it is an ANSI
-palette index — never a hardcoded RGB.
+One tint is shared by **user input** and **tool output**, and it is **derived from
+your terminal's own background** rather than hardcoded. In `auto` mode the renderer
+asks the terminal for its default background (OSC 11) and lifts it slightly — e.g.
+`#1a1b26` → `#30313c` — so the band is subtle and matches your colour scheme.
+Agent messages and thinking keep the default background.
+
+```
+--theme auto | dark | light     (config key: theme)
+```
+
+- `auto` — follow the terminal's reported dark/light mode, and derive the tint
+  from its background.
+- `dark` — force the dark palette (terminal background + default foreground).
+- `light` — force **black on white**: white surface, black text, light-grey tint.
+
+Change it via `--theme`, `Ctrl+P` → **Theme** (panes), or `/theme` (REPL); it is
+saved to the config file. Accents stay ANSI palette indices in both modes.
 
 ## Streaming & thinking
 

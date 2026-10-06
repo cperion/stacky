@@ -9,7 +9,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
-import { theme, scrollbarTheme } from "./theme.ts"
+import { theme, scrollbarOptions } from "./theme.ts"
 import { concat, block, header, headerWith, paneRule, paneInner, plain, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
@@ -35,7 +35,7 @@ export class TaskPane {
       flexGrow: 1,
       scrollY: true,
       scrollX: false,
-      scrollbarOptions: scrollbarTheme,
+      scrollbarOptions: scrollbarOptions(),
     })
     this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "word" })
     this.scroll.add(this.text)

@@ -6,7 +6,7 @@ import { ChatPane } from "./chat-pane.ts"
 import { FilePane } from "./file-pane.ts"
 import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
-import { theme } from "./theme.ts"
+import { applyTheme, theme } from "./theme.ts"
 import { concat, plain } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 
@@ -37,7 +37,15 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     },
   })
 
-  const outer = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column" })
+  // Theme must be resolved before any renderable is created.
+  await applyTheme(renderer, opts.settings.config.theme)
+
+  const outer = new BoxRenderable(renderer, {
+    width: "100%",
+    height: "100%",
+    flexDirection: "column",
+    backgroundColor: theme.bg,
+  })
   const main = new BoxRenderable(renderer, {
     width: "100%",
     flexGrow: 1,

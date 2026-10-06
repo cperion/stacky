@@ -12,7 +12,7 @@ import {
 } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
-import { theme } from "./theme.ts"
+import { applyTheme, theme } from "./theme.ts"
 import { block, clampLines, concat, fit, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
@@ -46,6 +46,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     targetFps: 30,
     onDestroy: () => resolveDone(result),
   })
+
+  await applyTheme(renderer, opts.settings.config.theme)
 
   // ---- footer -------------------------------------------------------------
 
@@ -236,6 +238,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
           plain("\n"),
           dim("  /thinking-blocks   toggle thinking display"),
           plain("\n"),
+          dim("  /theme [mode]      auto | dark | light (restart to apply)"),
+          plain("\n"),
           dim("  /status            show runtime status"),
           plain("\n"),
           dim("  /new               reset the session"),
@@ -286,6 +290,17 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         opts.settings.config.showThinking = value
         opts.settings.persist()
         print([plain(`Thinking display ${value ? "on" : "off"}.`)])
+        return true
+      }
+      case "theme": {
+        const valid = ["auto", "dark", "light"]
+        if (!valid.includes(argument)) {
+          print([plain(`Theme is ${opts.settings.config.theme}. Usage: /theme auto|dark|light`) ])
+          return true
+        }
+        opts.settings.config.theme = argument as "auto" | "dark" | "light"
+        opts.settings.persist()
+        print([plain(`Theme set to ${argument}. Restart to apply.`)])
         return true
       }
       case "status": {

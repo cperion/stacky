@@ -8,7 +8,7 @@ import {
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
-import { theme, scrollbarTheme } from "./theme.ts"
+import { theme, scrollbarOptions } from "./theme.ts"
 import { concat, fit, header, plain, rule, sectionRule, type Part } from "./render.ts"
 
 export type MenuItem =
@@ -66,7 +66,7 @@ export class MenuOverlay {
       flexGrow: 1,
       scrollY: true,
       scrollX: false,
-      scrollbarOptions: scrollbarTheme,
+      scrollbarOptions: scrollbarOptions(),
     })
     this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "word" })
     this.scroll.add(this.text)
