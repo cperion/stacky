@@ -161,7 +161,7 @@ export function renderMarkdown(text: string, width: number, indent = 0): ReturnT
     }
 
     if (fence) {
-      pushWrapped([{ text: raw, fg: CODE() }], "▌ ")
+      pushWrapped([{ text: raw, fg: CODE() }], "│ ")
       continue
     }
 
@@ -185,7 +185,7 @@ export function renderMarkdown(text: string, width: number, indent = 0): ReturnT
 
     const quote = /^\s*>\s?(.*)$/.exec(raw)
     if (quote) {
-      pushWrapped(inline(quote[1] ?? "").map((seg) => ({ ...seg, dim: true })), "▌ ")
+      pushWrapped(inline(quote[1] ?? "").map((seg) => ({ ...seg, dim: true })), "│ ")
       continue
     }
 

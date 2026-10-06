@@ -3,64 +3,72 @@ import type { AgentState } from "../agent/types.ts"
 import { theme } from "./theme.ts"
 import type { Part } from "./render.ts"
 
-/** How long a finished tool's ✓/✗ result stays on the chip. */
+/** How long a finished tool's ✓/✗ result stays attached to the chip. */
 export const TOOL_FLASH_MS = 1200
 
 /**
  * A status chip. When `bar`/`text` are set they are applied as an explicit
- * foreground/background pair chosen for contrast (dark text on bright bars,
- * light text on dark bars) — never the terminal's default foreground, which
- * would clash with a coloured bar. With no pair the chip inverts the terminal's
- * own fg/bg, which always contrasts.
+ * foreground/background pair chosen for contrast (see theme.chip). With no pair
+ * the chip inverts the terminal's own fg/bg, which always contrasts.
  */
 export type Chip = { label: string; bar?: ColorInput; text?: ColorInput }
 
 /**
- * Derive the compact status chip from runtime state. The label says what is
- * happening; the colour says how urgent it is. Shows elapsed seconds while a
- * phase runs, tokens/second while generating, why it is waiting, and a brief
- * ✓/✗ flash when a tool finishes.
+ * The chip always reflects the *current* phase — planning, running, thinking,
+ * writing, running a tool, or waiting — with elapsed seconds and todo progress
+ * where they help. The most recent tool result is appended as a ✓/✗ while it is
+ * fresh, so the chip shows a consistent state plus the last outcome rather than
+ * only the last outcome.
  */
 export function statusChip(state: AgentState, now = Date.now()): Chip {
+  const chip = derivePhase(state, now)
+  if (!state.activeTool && state.lastTool && now - state.lastTool.at < TOOL_FLASH_MS) {
+    chip.label += state.lastTool.ok ? " ✓" : " ✗"
+  }
+  return chip
+}
+
+function derivePhase(state: AgentState, now: number): Chip {
   if (state.activeTool) {
-    const chip: Chip = { label: `TOOL ${state.activeTool}`, bar: theme.blue, text: theme.onDark }
+    const chip: Chip = { label: `TOOL ${state.activeTool}`, ...theme.chip.blue }
     if (state.running) appendElapsed(chip, state.phaseStartedAt, now)
-    return chip
-  }
-
-  if (state.lastTool && now - state.lastTool.at < TOOL_FLASH_MS) {
-    const { tool, ok } = state.lastTool
-    return {
-      label: `TOOL ${tool} ${ok ? "✓" : "✗"}`,
-      bar: ok ? theme.green : theme.red,
-      text: ok ? theme.onBright : theme.onDark,
-    }
-  }
-
-  if (state.streaming?.reasoning) {
-    const chip: Chip = { label: "THINK", bar: theme.magenta, text: theme.onDark }
-    if (state.running) appendElapsed(chip, state.streaming.reasoningStartedAt, now)
-    return chip
-  }
-
-  if (state.streaming?.text) {
-    const chip: Chip = { label: "WRITE", bar: theme.blue, text: theme.onDark }
-    if (state.running) appendThroughput(chip, state.streaming.text, state.streaming.textStartedAt, now)
     return chip
   }
 
   if (state.mode === "waiting_for_user") {
     const reason = (state.userRequest?.choices?.length ?? 0) > 0 ? "·choice" : "·reply"
-    return { label: `WAIT ${reason}`, bar: theme.yellow, text: theme.onBright }
+    return { label: `WAIT ${reason}`, ...theme.chip.yellow }
+  }
+
+  if (state.streaming?.reasoning) {
+    const chip: Chip = { label: "THINK", ...theme.chip.magenta }
+    if (state.running) appendElapsed(chip, state.streaming.reasoningStartedAt, now)
+    return chip
+  }
+
+  if (state.streaming?.text) {
+    const chip: Chip = { label: "WRITE", ...theme.chip.blue }
+    if (state.running) appendThroughput(chip, state.streaming.text, state.streaming.textStartedAt, now)
+    return chip
   }
 
   if (state.running) {
-    return state.mode === "push"
-      ? { label: "PLAN", bar: theme.green, text: theme.onBright }
-      : { label: "RUN", bar: theme.green, text: theme.onBright }
+    const chip: Chip = state.mode === "push" ? { label: "PLAN", ...theme.chip.green } : { label: "RUN", ...theme.chip.green }
+    appendTodoProgress(chip, state)
+    return chip
   }
 
-  return state.mode === "push" ? { label: "READY" } : { label: "IDLE" }
+  const chip: Chip = state.mode === "push" ? { label: "READY" } : { label: "IDLE" }
+  appendTodoProgress(chip, state)
+  return chip
+}
+
+/** Append `done/total` for the top frame's checklist, when it has one. */
+function appendTodoProgress(chip: Chip, state: AgentState): void {
+  const frame = state.stack[state.stack.length - 1]
+  if (!frame || frame.todos.length === 0) return
+  const done = frame.todos.filter((todo) => todo.status !== "pending").length
+  chip.label += ` ${done}/${frame.todos.length}`
 }
 
 function appendElapsed(chip: Chip, since: number | undefined, now: number): void {
@@ -73,8 +81,7 @@ function appendThroughput(chip: Chip, text: string, since: number | undefined, n
   if (!since) return
   const seconds = (now - since) / 1000
   if (seconds < 0.6) return
-  const tokens = text.length / 4
-  chip.label += ` ${Math.max(0, Math.round(tokens / seconds))} t/s`
+  chip.label += ` ${Math.max(0, Math.round(text.length / 4 / seconds))} t/s`
 }
 
 export function renderChip(chip: Chip): Part {

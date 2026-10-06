@@ -158,6 +158,10 @@ interface the output appears in the chat; in the REPL it goes to the scrollback.
 
 ### Markdown & diffs
 
+Markers are consistent: the big `▌` block is reserved for **your messages** (with the
+tint), `│` is the thin gutter for tool output / thinking / code, `✻` marks thinking, and
+`→` marks tool calls. Agent prose is unmarked.
+
 Agent and user messages render as markdown: headings, bullet/numbered lists, fenced
 code blocks, blockquotes and rules, plus inline `code`, **bold**, *italic*,
 ~~strike~~ and [links](url). `edit()` tool calls render as a **diff** — removals in

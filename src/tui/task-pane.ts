@@ -82,7 +82,7 @@ export class TaskPane {
   private renderTop(frame: TaskFrame, waiting: boolean, width: number): Part[] {
     const color = waiting ? theme.yellow : theme.blue
     const parts: Part[] = [
-      t`${fg(color)("▌")} ${bold(fg(color)("TOP FRAME"))}  ${dim(frame.id)}`,
+      t`${fg(color)("▶")} ${bold(fg(color)("TOP FRAME"))}  ${dim(frame.id)}`,
       plain("\n\n"),
     ]
     parts.push(...this.field("Why", frame.why, width))

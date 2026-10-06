@@ -114,13 +114,15 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     }, RENDER_INTERVAL_MS)
   }
 
+  let wasFlashing = false
   const spinnerTimer = setInterval(() => {
     const state = opts.runtime.snapshot()
     const flashing = state.lastTool !== undefined && Date.now() - state.lastTool.at < TOOL_FLASH_MS
-    if (state.streaming?.active || state.mode === "execute" || flashing) {
+    if (state.streaming?.active || state.mode === "execute" || flashing || wasFlashing) {
       spin += 1
       requestRender()
     }
+    wasFlashing = flashing
   }, SPINNER_INTERVAL_MS)
 
   // --- menu ------------------------------------------------------------------

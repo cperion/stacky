@@ -145,7 +145,7 @@ export class ChatPane {
   }
 
   private bar(color: ReturnType<typeof fg>, label: string): Part {
-    return t`${color("▌")} ${bold(label)}`
+    return t`${color("✻")} ${bold(label)}`
   }
 
   private renderEntry(entry: ConversationEntry, width: number): StyledText {

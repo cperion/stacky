@@ -26,7 +26,7 @@ describe("renderMarkdown", () => {
     expect(text).toContain("Title")
     expect(text).toContain("• one")
     expect(text).toContain("• two")
-    expect(text).toContain("▌ const x = 1")
+    expect(text).toContain("│ const x = 1")
     expect(text).not.toContain("#")
     expect(text).not.toContain("```")
   })

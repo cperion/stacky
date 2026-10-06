@@ -12,7 +12,7 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, formatTokens, plain, prefixLines, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
@@ -132,7 +132,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const entryParts = (entry: ConversationEntry, width: number, showThinking: boolean): StyledText | undefined => {
     switch (entry.role) {
       case "user":
-        return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
+        return prefixLines(renderMarkdown(entry.text, width - 2, 0), "▌ ", theme.green)
       case "agent":
         return renderMarkdown(entry.text, width, 0)
       case "thinking":
@@ -392,10 +392,14 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   })
 
   // Elapsed-time feedback: refresh the footer while a turn is in flight.
+  let wasFlashing = false
   const ticker = setInterval(() => {
     const state = opts.runtime.snapshot()
     const flashing = state.lastTool !== undefined && Date.now() - state.lastTool.at < TOOL_FLASH_MS
-    if (state.running || flashing) updateFooter(state)
+    // Also re-render on the tick *after* the flash ends, so the chip settles
+    // back to the consistent phase instead of sticking on the last tool.
+    if (state.running || flashing || wasFlashing) updateFooter(state)
+    wasFlashing = flashing
   }, 250)
 
   updateFooter(opts.runtime.snapshot())

@@ -29,12 +29,17 @@ describe("statusChip", () => {
     ).toBe("WAIT ·choice")
   })
 
-  test("flashes the last tool result briefly", () => {
-    const ok = statusChip(state({ lastTool: { tool: "bash", ok: true, at: 1000 } }), 1500)
-    expect(ok.label).toBe("TOOL bash ✓")
-    const bad = statusChip(state({ lastTool: { tool: "bash", ok: false, at: 1000 } }), 1500)
-    expect(bad.label).toBe("TOOL bash ✗")
-    // Expired: back to the normal phase.
+  test("the phase stays primary, with the last result as a suffix", () => {
+    expect(statusChip(state({ lastTool: { tool: "bash", ok: true, at: 1000 } }), 1500).label).toBe("IDLE ✓")
+    expect(statusChip(state({ lastTool: { tool: "bash", ok: false, at: 1000 } }), 1500).label).toBe("IDLE ✗")
+    // While thinking, the phase is still shown, with the result appended.
+    const thinking = state({
+      running: true,
+      streaming: { active: true, reasoning: "…", text: "", startedAt: 1000 },
+      lastTool: { tool: "bash", ok: true, at: 1400 },
+    })
+    expect(statusChip(thinking, 1600).label).toBe("THINK ✓")
+    // Expired: back to the plain phase.
     expect(statusChip(state({ lastTool: { tool: "bash", ok: true, at: 1000 } }), 9000).label).toBe("IDLE")
   })
 

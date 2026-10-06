@@ -140,20 +140,34 @@ export function paneInner(box: BoxRenderable, renderer: CliRenderer, frac: numbe
   return Math.max(12, width - pad)
 }
 
-/**
- * A blockquote-style block: every line gets a coloured left bar and the text is
- * left at the default foreground, which keeps maximum contrast on any theme
- * without painting a background colour.
- */
+/** A thin-gutter block for secondary content (tool output, quotes). */
 export function quoteBlock(text: string, width: number, barColor: ColorInput = "default"): StyledText {
   const lines = wrapRaw(text, Math.max(8, width - 2))
   const parts: Part[] = []
   lines.forEach((line, index) => {
     if (index > 0) parts.push(plain("\n"))
-    parts.push(fg(barColor)("▌ "))
+    parts.push(fg(barColor)("│ "))
     parts.push(plain(line))
   })
   return concat(parts)
+}
+
+/**
+ * Prefix every line of already-rendered content with a marker. Reserved for
+ * user messages (the big `▌` block), keeping transcript markers distinct.
+ */
+export function prefixLines(content: StyledText, prefix: string, color: ColorInput): StyledText {
+  const out: TextChunk[] = [fg(color)(prefix) as TextChunk]
+  for (const chunk of content.chunks) {
+    chunk.text.split("\n").forEach((part, index) => {
+      if (index > 0) {
+        out.push({ __isChunk: true, text: "\n", fg: chunk.fg, bg: chunk.bg, attributes: chunk.attributes })
+        out.push(fg(color)(prefix) as TextChunk)
+      }
+      if (part) out.push({ __isChunk: true, text: part, fg: chunk.fg, bg: chunk.bg, attributes: chunk.attributes })
+    })
+  }
+  return new StyledText(out)
 }
 
 /** Clamp text to a maximum number of lines, appending a marker when truncated. */
