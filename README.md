@@ -105,14 +105,19 @@ stacky  ·  REPL mode. Type a task, or /help for commands.
 ▌ Agent
   Fixed it. Tests pass.
 
- EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5   ctrl+c quit · Esc interrupts · /help
-▌ TASK  Fix the failing token test   depth 1
-◆ FILES  src/token.ts  tests/token.test.ts   3.1k/24.0k
+ EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
+TASK   Fix the failing token test. The auth test fails only when refresh tokens are expired.
+SCOPE  Inspect timestamp parsing and normalization only.
+DONE   Determine whether parsing is responsible, with evidence for the parent frame.
+────────────────────────────────────────────────────────────────────────────────────────
+FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
 ❯ _
 ```
 
-`▌ TASK` is the top task frame (with stack depth); `◆ FILES` is the current file
-working set with token pressure. Both update live.
+The dashboard is one unified panel: the top task frame (`TASK`/`SCOPE`/`DONE`, plus
+`PARENT` when nested) with the file working set listed underneath. Values **wrap**
+rather than being clipped, and the panel height grows with the content (collapse it
+with `/dashboard off`). `--ui` can switch to the panes interface.
 
 REPL keys: `↑`/`↓` recall previous inputs; `j`/`k`/`l` move and select the choice
 list when the agent asks a question (while the prompt is empty); `Esc` interrupts the
