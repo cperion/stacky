@@ -5,6 +5,7 @@ import {
   fg,
   InputRenderable,
   italic,
+  reverse,
   ScrollBoxRenderable,
   t,
   TextRenderable,
@@ -12,7 +13,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, paneInner, clampLines, concat, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
+import { block, paneInner, clampLines, concat, fit, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -48,7 +49,7 @@ export class ChatPane {
       stickyStart: "bottom",
       scrollbarOptions: scrollbarTheme,
     })
-    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "word" })
+    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "word" })
     this.scroll.add(this.text)
 
     this.input = new InputRenderable(renderer, {
@@ -180,9 +181,9 @@ export class ChatPane {
       const marker = isSelected ? "❯" : " "
       const tag = isPreferred ? "  recommended" : ""
       const label = `${marker} ${index + 1}. ${choice.label}${tag}`
-      wrapRaw(label, width).forEach((line, i) => {
+      wrapRaw(label, width - 1).forEach((line, i) => {
         if (i > 0) parts.push(plain("\n"))
-        parts.push(isSelected ? bold(fg(theme.blue)(line)) : plain(line))
+        parts.push(isSelected ? reverse(bold(fit(line, width - 1))) : plain(line))
       })
       parts.push(plain("\n"))
       if (choice.description) {

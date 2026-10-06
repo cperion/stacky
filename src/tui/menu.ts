@@ -3,12 +3,13 @@ import {
   BoxRenderable,
   dim,
   fg,
+  reverse,
   ScrollBoxRenderable,
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, header, plain, rule, sectionRule, type Part } from "./render.ts"
+import { concat, fit, header, plain, rule, sectionRule, type Part } from "./render.ts"
 
 export type MenuItem =
   | { kind: "separator"; label?: string }
@@ -67,7 +68,7 @@ export class MenuOverlay {
       scrollX: false,
       scrollbarOptions: scrollbarTheme,
     })
-    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "word" })
+    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "word" })
     this.scroll.add(this.text)
     this.box.add(this.scroll)
   }
@@ -181,11 +182,11 @@ export class MenuOverlay {
     if (!level) return
 
     const width = this.contentWidth()
-    const ruleWidth = width
+    const rowWidth = Math.max(20, width - 1)
     const parts: Part[] = [
       header(level.title, this.stack.length > 1 ? "‹ back" : "", width),
       plain("\n"),
-      rule(ruleWidth),
+      rule(rowWidth),
       plain("\n"),
     ]
 
@@ -193,16 +194,20 @@ export class MenuOverlay {
       if (i > 0) parts.push(plain("\n"))
       if (item.kind === "separator") {
         parts.push(plain("\n"))
-        parts.push(sectionRule(item.label ?? "", ruleWidth))
+        parts.push(sectionRule(item.label ?? "", rowWidth))
         return
       }
 
       const selected = i === this.index
-      const marker = selected ? fg(theme.blue)("❯") : plain(" ")
+      const marker = selected ? "❯" : " "
       const label = item.label.padEnd(LABEL_WIDTH)
-      parts.push(marker, plain(" "))
-      parts.push(selected ? bold(label) : plain(label))
-      parts.push(valuePart(item))
+      if (selected) {
+        // Reverse video only renders correctly with an explicit default bg.
+        parts.push(reverse(bold(fit(`${marker} ${label}${valueText(item)}`, rowWidth))))
+      } else {
+        parts.push(plain(`${marker} ${label}`))
+        parts.push(valuePart(item))
+      }
     })
 
     parts.push(plain("\n\n"))
@@ -210,6 +215,19 @@ export class MenuOverlay {
 
     this.text.content = concat(parts)
     this.scroll.scrollTop = Math.max(0, (this.index - 4) * 1)
+  }
+}
+
+function valueText(item: Exclude<MenuItem, { kind: "separator" }>): string {
+  switch (item.kind) {
+    case "toggle":
+      return item.value() ? "● on" : "○ off"
+    case "choice":
+      return item.value()
+    case "submenu":
+      return `›  ${item.hint ?? ""}`.trimEnd()
+    case "action":
+      return `${item.checked ? "✓ " : ""}${item.hint ?? ""}`.trimEnd()
   }
 }
 

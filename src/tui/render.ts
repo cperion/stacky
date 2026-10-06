@@ -33,9 +33,9 @@ export function rule(width: number): StyledText {
   return concat([dim("─".repeat(Math.max(1, width)))])
 }
 
-/** A rule for a pane, slightly over-long so it reaches the border even under a scrollbar. */
+/** A rule for a pane sized to the usable content width (no overflow, no wrap). */
 export function paneRule(innerWidth: number): StyledText {
-  return rule(innerWidth + 2)
+  return rule(innerWidth)
 }
 
 /** A dim horizontal rule with an embedded section label. */
@@ -113,6 +113,13 @@ export function block(text: string, width: number, indent = 0, marker?: string):
 /** Right-align a value inside `width`. */
 export function rightAlign(value: string, width: number): string {
   return value.length >= width ? value : " ".repeat(width - value.length) + value
+}
+
+/** Pad with spaces (or truncate) to exactly `width` columns. */
+export function fit(text: string, width: number): string {
+  if (width <= 0) return text
+  if (text.length >= width) return text.slice(0, width)
+  return text + " ".repeat(width - text.length)
 }
 
 /**
