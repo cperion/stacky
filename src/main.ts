@@ -10,7 +10,7 @@ import { createModel, detectProvider, type ProviderName } from "./llm/providers.
 import { runApp } from "./tui/app.ts"
 import type { LLMClient } from "./llm/client.ts"
 
-const { values } = parseArgs({
+const { values, positionals } = parseArgs({
   options: {
     mock: { type: "boolean", default: false },
     headless: { type: "boolean", default: false },
@@ -59,8 +59,7 @@ if (values.session) {
   attachSessionAutosave(runtime, sessionPath)
 }
 
-const positionalTask = process.argv.slice(2).find((arg) => !arg.startsWith("-"))
-const initialTask = values.task ?? positionalTask
+const initialTask = values.task ?? positionals[0]
 
 if (values.headless) {
   if (resumeNote) console.log(resumeNote)
