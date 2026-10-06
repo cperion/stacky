@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { AgentState } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, formatTokens, header, innerWidth, plain, progressBar, rule, type Dimension, type Part } from "./render.ts"
+import { concat, formatTokens, header, paneRule, sidePaneInner, plain, progressBar, type Dimension, type Part } from "./render.ts"
 
 export class FilePane {
   readonly box: BoxRenderable
@@ -23,6 +23,7 @@ export class FilePane {
   ) {
     this.box = new BoxRenderable(renderer, {
       width: opts.width,
+      flexShrink: 0,
       border: true,
       borderStyle: "rounded",
       borderColor: theme.dim,
@@ -42,7 +43,7 @@ export class FilePane {
   }
 
   update(state: AgentState, budgetTokens: number): void {
-    const width = innerWidth(this.box, this.renderer, 0.26)
+    const width = sidePaneInner(this.renderer, 0.26)
     const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
     const ratio = budgetTokens > 0 ? used / budgetTokens : 0
     const pressure = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.green
@@ -51,7 +52,7 @@ export class FilePane {
     const parts: Part[] = [
       header("FILE WORKING SET", `${state.files.length} file${state.files.length === 1 ? "" : "s"}`, width),
       plain("\n"),
-      rule(width),
+      paneRule(width),
       plain("\n\n"),
       t`${bold(formatTokens(used))} ${dim(`/ ${formatTokens(budgetTokens)}`)}  ${fg(pressure)(percent)}`,
       plain("\n"),

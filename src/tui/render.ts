@@ -4,7 +4,6 @@ import {
   isStyledText,
   StyledText,
   stringToStyledText,
-  type BoxRenderable,
   type CliRenderer,
   type TextChunk,
 } from "@opentui/core"
@@ -31,6 +30,11 @@ export function concat(parts: Part[]): StyledText {
 /** A full-width dim horizontal rule. */
 export function rule(width: number): StyledText {
   return concat([dim("─".repeat(Math.max(1, width)))])
+}
+
+/** A rule for a pane, slightly over-long so it reaches the border even under a scrollbar. */
+export function paneRule(innerWidth: number): StyledText {
+  return rule(innerWidth + 2)
 }
 
 /** A dim horizontal rule with an embedded section label. */
@@ -110,10 +114,20 @@ export function rightAlign(value: string, width: number): string {
   return value.length >= width ? value : " ".repeat(width - value.length) + value
 }
 
-/** Compute a pane's usable inner width (minus border + padding). */
-export function innerWidth(box: BoxRenderable, renderer: CliRenderer, fallbackFrac: number): number {
-  const width = box.width || Math.floor(renderer.terminalWidth * fallbackFrac)
-  return Math.max(8, width - 4)
+/**
+ * Inner content width for a fixed-fraction side pane.
+ * Subtracts border (2), horizontal padding (2) and a column for the scrollbar.
+ */
+export function sidePaneInner(renderer: CliRenderer, frac = 0.26): number {
+  return Math.max(16, Math.floor(renderer.terminalWidth * frac) - 5)
+}
+
+/** Inner content width for the flexible centre pane (terminal minus both side panes and gaps). */
+export function chatPaneInner(renderer: CliRenderer, sideFrac = 0.26): number {
+  const width = renderer.terminalWidth
+  const sideOuter = Math.floor(width * sideFrac)
+  const chatOuter = Math.max(30, width - 2 - 2 * sideOuter)
+  return Math.max(16, chatOuter - 5)
 }
 
 /** Clamp text to a maximum number of lines, appending a marker when truncated. */

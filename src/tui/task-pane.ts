@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, block, header, headerWith, innerWidth, plain, rule, type Dimension, type Part } from "./render.ts"
+import { concat, block, header, headerWith, paneRule, sidePaneInner, plain, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
   readonly box: BoxRenderable
@@ -23,6 +23,7 @@ export class TaskPane {
   ) {
     this.box = new BoxRenderable(renderer, {
       width: opts.width,
+      flexShrink: 0,
       border: true,
       borderStyle: "rounded",
       borderColor: theme.dim,
@@ -42,7 +43,7 @@ export class TaskPane {
   }
 
   update(state: AgentState, showHistory: boolean): void {
-    const width = innerWidth(this.box, this.renderer, 0.26)
+    const width = sidePaneInner(this.renderer, 0.26)
     const top = state.stack[state.stack.length - 1]
     const parents = state.stack.slice(0, -1)
 
@@ -56,7 +57,7 @@ export class TaskPane {
     } else {
       parts.push(header("TASK STACK", `depth ${state.stack.length} · ${state.mode}`, width))
     }
-    parts.push(plain("\n"), rule(width), plain("\n"))
+    parts.push(plain("\n"), paneRule(width), plain("\n"))
 
     if (!top) {
       parts.push(plain("\n"))
@@ -96,7 +97,7 @@ export class TaskPane {
   }
 
   private renderParents(parents: TaskFrame[], width: number): Part[] {
-    const parts: Part[] = [plain("\n"), header("PARENTS", `${parents.length}`, width), plain("\n"), rule(width), plain("\n")]
+    const parts: Part[] = [plain("\n"), header("PARENTS", `${parents.length}`, width), plain("\n"), paneRule(width), plain("\n")]
     for (const frame of [...parents].reverse()) {
       parts.push(plain("\n"), t`${dim("·")} ${frame.why.split("\n")[0] ?? ""}`)
     }
@@ -104,7 +105,7 @@ export class TaskPane {
   }
 
   private renderHistory(history: ClosedFrame[], width: number): Part[] {
-    const parts: Part[] = [header("HISTORY", `${history.length}`, width), plain("\n"), rule(width)]
+    const parts: Part[] = [header("HISTORY", `${history.length}`, width), plain("\n"), paneRule(width)]
     for (const closed of [...history].reverse().slice(0, 15)) {
       parts.push(plain("\n"))
       parts.push(t`${fg(theme.green)("✓")} ${closed.intent.why.split("\n")[0] ?? ""}`)

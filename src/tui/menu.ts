@@ -8,7 +8,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, header, plain, rule, sectionRule, fractionWidth, type Dimension, type Part } from "./render.ts"
+import { concat, header, plain, rule, sectionRule, type Part } from "./render.ts"
 
 export type MenuItem =
   | { kind: "separator"; label?: string }
@@ -43,15 +43,12 @@ export class MenuOverlay {
   private stack: Level[] = []
   private index = 0
 
-  constructor(
-    private renderer: CliRenderer,
-    opts: { width: Dimension },
-  ) {
+  constructor(private renderer: CliRenderer) {
     this.box = new BoxRenderable(renderer, {
       position: "absolute",
       left: "20%",
       top: "14%",
-      width: opts.width,
+      width: "62%",
       height: "70%",
       zIndex: 200,
       border: true,
@@ -75,6 +72,23 @@ export class MenuOverlay {
     this.box.add(this.scroll)
   }
 
+  /** Centre the modal with pixel geometry (absolute percentages are unreliable). */
+  relayout(): void {
+    const width = this.renderer.terminalWidth
+    const height = this.renderer.terminalHeight
+    const boxWidth = Math.max(44, Math.floor(width * 0.62))
+    const boxHeight = Math.max(10, Math.min(height - 2, Math.floor(height * 0.72)))
+    this.box.width = boxWidth
+    this.box.height = boxHeight
+    this.box.left = Math.max(0, Math.floor((width - boxWidth) / 2))
+    this.box.top = Math.max(0, Math.floor((height - boxHeight) / 2))
+    if (this.box.visible) this.render()
+  }
+
+  private contentWidth(): number {
+    return Math.max(24, Math.floor(this.renderer.terminalWidth * 0.62) - 6)
+  }
+
   get isOpen(): boolean {
     return this.box.visible
   }
@@ -82,6 +96,7 @@ export class MenuOverlay {
   open(title: string, items: MenuItem[]): void {
     this.stack = [{ title, items }]
     this.index = nextSelectable(items, -1, 1)
+    this.relayout()
     this.box.visible = true
     this.render()
   }
@@ -165,11 +180,12 @@ export class MenuOverlay {
     const level = this.current()
     if (!level) return
 
-    const width = fractionWidth(this.renderer, 0.62, 6)
+    const width = this.contentWidth()
+    const ruleWidth = width
     const parts: Part[] = [
       header(level.title, this.stack.length > 1 ? "‹ back" : "", width),
       plain("\n"),
-      rule(width),
+      rule(ruleWidth),
       plain("\n"),
     ]
 
@@ -177,7 +193,7 @@ export class MenuOverlay {
       if (i > 0) parts.push(plain("\n"))
       if (item.kind === "separator") {
         parts.push(plain("\n"))
-        parts.push(sectionRule(item.label ?? "", width))
+        parts.push(sectionRule(item.label ?? "", ruleWidth))
         return
       }
 

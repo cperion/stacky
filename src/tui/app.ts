@@ -57,7 +57,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     wrapMode: "none",
     height: 1,
   })
-  const menu = new MenuOverlay(renderer, { width: "62%" })
+  const menu = new MenuOverlay(renderer)
 
   main.add(taskPane.box)
   main.add(chatPane.box)
@@ -287,7 +287,10 @@ export async function runApp(opts: AppOptions): Promise<void> {
     requestRender()
   })
 
-  renderer.on("resize", () => requestRender())
+  renderer.on("resize", () => {
+    menu.relayout()
+    requestRender()
+  })
 
   render()
   chatPane.focus()

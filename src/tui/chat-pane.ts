@@ -12,7 +12,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, clampLines, concat, header, innerWidth, plain, rule, type Part } from "./render.ts"
+import { block, chatPaneInner, clampLines, concat, header, paneRule, plain, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -30,6 +30,8 @@ export class ChatPane {
   ) {
     this.box = new BoxRenderable(renderer, {
       flexGrow: 1,
+      flexBasis: 0,
+      minWidth: 0,
       border: true,
       borderStyle: "rounded",
       borderColor: theme.blue,
@@ -74,8 +76,8 @@ export class ChatPane {
   }
 
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
-    const width = innerWidth(this.box, this.renderer, 0.5)
-    const parts: Part[] = [header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), rule(width), plain("\n")]
+    const width = chatPaneInner(this.renderer, 0.26)
+    const parts: Part[] = [header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), paneRule(width), plain("\n")]
 
     if (state.conversation.length === 0) {
       parts.push(plain("\n"), dim("No conversation yet. Describe a task below to begin."))
@@ -151,7 +153,7 @@ export class ChatPane {
   }
 
   private renderChoices(request: UserRequestRecord, selected: number, width: number): Part[] {
-    const parts: Part[] = [rule(width), plain("\n"), bold("Needs your input"), plain("\n\n")]
+    const parts: Part[] = [paneRule(width), plain("\n"), bold("Needs your input"), plain("\n\n")]
     const choices = request.choices ?? []
     choices.forEach((choice, index) => {
       const isSelected = index === selected
