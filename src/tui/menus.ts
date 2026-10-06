@@ -1,7 +1,8 @@
 import type { MenuItem } from "./menu.ts"
 import type { SettingsController, UiMode } from "./settings.ts"
 import type { StackyConfig } from "../config.ts"
-import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
+import { PROVIDERS } from "../llm/catalog.ts"
+import { cachedModels } from "../llm/models.ts"
 import { hasApiKey, type ProviderName } from "../llm/providers.ts"
 
 export type MenuContext = SettingsController & {
@@ -118,7 +119,7 @@ function modelItems(ctx: MenuContext, commitModel: () => void): MenuItem[] {
       kind: "separator",
       label: `${provider}${available ? "" : " — no API key"}`,
     })
-    for (const model of MODEL_CATALOG[provider]) {
+    for (const model of cachedModels(provider)) {
       items.push({
         kind: "action",
         label: model,

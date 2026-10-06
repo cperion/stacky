@@ -1,6 +1,7 @@
 import type { AgentRuntime } from "../agent/runtime.ts"
-import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
-import type { ProviderName } from "../llm/providers.ts"
+import { PROVIDERS } from "../llm/catalog.ts"
+import { hasApiKey, type ProviderName } from "../llm/providers.ts"
+import { listModels } from "../llm/models.ts"
 import type { SettingsController, UiMode } from "./settings.ts"
 
 /** Everything a command needs, provided by whichever interface is running. */
@@ -33,27 +34,30 @@ const COMMANDS: Command[] = [
     aliases: ["models"],
     usage: "/model [provider/id]",
     description: "show or choose a model",
-    run: (arg, ctx) => {
+    run: async (arg, ctx) => {
       if (!arg) {
-        const lines = ["Models:"]
+        const lines = [`Current: ${ctx.runtime.llmLabel}`, ""]
         for (const provider of PROVIDERS) {
-          for (const model of MODEL_CATALOG[provider]) {
+          const models = await listModels(provider)
+          lines.push(`${provider}${hasApiKey(provider) ? "" : "  (no API key)"}:`)
+          for (const model of models.slice(0, 40)) {
             const current = ctx.settings.config.provider === provider && ctx.settings.config.model === model
-            lines.push(`  ${current ? "❯" : " "} ${provider}/${model}`)
+            lines.push(`  ${current ? "❯" : " "} ${model}`)
           }
+          if (models.length > 40) lines.push(`    … ${models.length - 40} more`)
         }
-        lines.push("Choose with /model <provider>/<model>")
+        lines.push("", "Switch with /model <provider>/<model>")
         ctx.print(lines.join("\n"))
         return
       }
       const [providerPart, modelPart] = arg.includes("/") ? arg.split("/", 2) : [undefined, arg]
       const provider = (providerPart as ProviderName | undefined) ?? ctx.settings.config.provider
-      if (!MODEL_CATALOG[provider]?.includes(modelPart ?? "")) {
-        ctx.print(`Unknown model "${arg}". Try /model to list.`)
+      if (!PROVIDERS.includes(provider) || !modelPart) {
+        ctx.print('Usage: /model <provider>/<model>  e.g. deepseek/deepseek-flash')
         return
       }
       ctx.settings.config.provider = provider
-      ctx.settings.config.model = modelPart!
+      ctx.settings.config.model = modelPart
       ctx.settings.rebuildModel()
       ctx.settings.persist()
       ctx.print(`Model: ${provider}/${modelPart}`)
