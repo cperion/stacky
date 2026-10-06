@@ -9,7 +9,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
-import { theme } from "./theme.ts"
+import { theme, scrollbarTheme } from "./theme.ts"
 import { concat, plain, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
@@ -23,10 +23,9 @@ export class TaskPane {
       height: "100%",
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.border,
-      backgroundColor: theme.panel,
+      borderColor: theme.fg,
       title: " TASK STACK ",
-      titleColor: theme.accent,
+      titleColor: theme.fg,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -36,10 +35,11 @@ export class TaskPane {
       scrollY: true,
       scrollX: false,
       stickyScroll: false,
+      scrollbarOptions: scrollbarTheme,
     })
     this.text = new TextRenderable(renderer, {
       content: "",
-      fg: theme.text,
+      fg: theme.fg,
       wrapMode: "word",
     })
     this.scroll.add(this.text)
@@ -57,7 +57,7 @@ export class TaskPane {
       parts.push(plain("\n"))
     }
 
-    parts.push(t`${bold(fg(theme.accent)("TASK STACK"))} ${dim(`depth ${state.stack.length} · ${state.mode}`)}`)
+    parts.push(t`${bold("TASK STACK")} ${dim(`depth ${state.stack.length} · ${state.mode}`)}`)
     parts.push(plain("\n\n"))
 
     if (!top) {
@@ -79,7 +79,7 @@ export class TaskPane {
   }
 
   private renderTop(frame: TaskFrame, waiting: boolean): Part[] {
-    const color = waiting ? theme.yellow : theme.accent
+    const color = waiting ? theme.yellow : theme.fg
     const parts: Part[] = [
       t`${bold(fg(color)("▶ TOP FRAME"))} ${dim(frame.id)}`,
       plain("\n"),
@@ -96,10 +96,10 @@ export class TaskPane {
   }
 
   private renderParents(parents: TaskFrame[]): Part[] {
-    const parts: Part[] = [plain("\n\n"), t`${bold(fg(theme.dim)("PARENT FRAMES"))}`]
+    const parts: Part[] = [plain("\n\n"), t`${bold(dim("PARENT FRAMES"))}`]
     for (const frame of [...parents].reverse()) {
       parts.push(plain("\n"))
-      parts.push(t`${fg(theme.dim)("▸")} ${frame.why.split("\n")[0] ?? ""}`)
+      parts.push(t`${dim("▸")} ${frame.why.split("\n")[0] ?? ""}`)
     }
     return parts
   }

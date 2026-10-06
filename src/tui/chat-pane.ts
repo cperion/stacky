@@ -10,7 +10,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, UserRequestRecord } from "../agent/types.ts"
-import { theme } from "./theme.ts"
+import { theme, scrollbarTheme } from "./theme.ts"
 import { clampLines, concat, plain, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
@@ -29,10 +29,9 @@ export class ChatPane {
       height: "100%",
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.border,
-      backgroundColor: theme.panel,
+      borderColor: theme.fg,
       title: " CHAT ",
-      titleColor: theme.green,
+      titleColor: theme.fg,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -44,16 +43,19 @@ export class ChatPane {
       scrollX: false,
       stickyScroll: true,
       stickyStart: "bottom",
+      scrollbarOptions: scrollbarTheme,
     })
-    this.text = new TextRenderable(renderer, { content: "", fg: theme.text, wrapMode: "word" })
+    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "word" })
     this.scroll.add(this.text)
 
     this.input = new InputRenderable(renderer, {
       placeholder: "Type a message and press Enter…",
       backgroundColor: theme.bg,
       focusedBackgroundColor: theme.bg,
-      textColor: theme.text,
-      cursorColor: theme.accent,
+      textColor: theme.fg,
+      focusedTextColor: theme.fg,
+      placeholderColor: theme.gray,
+      cursorColor: theme.fg,
     })
     this.input.onSubmit = () => {
       const value = this.input.value
@@ -114,7 +116,7 @@ export class ChatPane {
       parts.push(plain("\n"))
       const marker = isSelected ? "❯" : " "
       const label = `${marker} ${index + 1}. ${choice.label}${isPreferred ? "  (recommended)" : ""}`
-      parts.push(isSelected ? bold(fg(theme.accent)(label)) : plain(label))
+      parts.push(isSelected ? bold(label) : plain(label))
       if (choice.description) {
         parts.push(plain("\n"))
         parts.push(dim(`     ${choice.description}`))

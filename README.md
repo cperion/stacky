@@ -31,8 +31,8 @@ bun run src/main.ts --mock --task "survey the repository"
 export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY / DEEPSEEK_API_KEY
 bun run src/main.ts --task "fix the failing test in tests/auth.test.ts"
 
-# Point at another workspace
-bun run src/main.ts --cwd /path/to/repo --provider deepseek --model deepseek-chat
+# Point at another workspace (deepseek is the default provider/model)
+bun run src/main.ts --cwd /path/to/repo --provider deepseek --model deepseek-flash
 
 # Headless (no TUI) — good for CI and scripts
 bun run src/main.ts --headless --task "add a slugify() helper and test it"
@@ -56,7 +56,7 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 | --- | --- |
 | `Enter` | send a message / choose the highlighted option |
 | `↑` / `↓` | move between choices when the agent asks a question |
-| `h` | toggle closed-frame history in the task pane |
+| `Ctrl+T` | toggle closed-frame history in the task pane |
 | `Ctrl+C` | quit |
 
 ## CLI
@@ -65,8 +65,9 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 --task <text>              initial task
 --mock                     offline demo model (no API key)
 --headless                 stream events to stdout instead of the TUI
---provider <name>          openai | anthropic | deepseek (default: auto-detect)
---model <id>               model id override
+--provider <name>          openai | anthropic | deepseek (default: deepseek)
+--model <id>               model id override (default: deepseek-flash)
+--thinking                 keep the model's reasoning mode on (forces toolChoice auto)
 --cwd <path>               workspace root (default: cwd)
 --file-budget <tokens>     file working-set budget (default 24000)
 --conversation-budget <t>  conversation budget (default 32000)
@@ -75,8 +76,14 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 -h, --help                 help
 ```
 
-Environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`,
-`STACKY_PROVIDER`, `STACKY_MODEL`.
+Environment: `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`STACKY_PROVIDER`, `STACKY_MODEL`. Defaults to DeepSeek `deepseek-flash` when no key
+is found for another provider.
+
+The TUI is terminal-native: it paints no background, uses the terminal's default
+foreground for text and borders, and ANSI palette indices (SGR `38;5;N`) for semantic
+accents — so it inherits whatever colour scheme the terminal is configured with, on
+both light and dark backgrounds. It never hardcodes RGB colours.
 
 ## Architecture
 

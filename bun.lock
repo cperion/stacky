@@ -8,6 +8,7 @@
         "@ai-sdk/anthropic": "^4.0.72",
         "@ai-sdk/deepseek": "^3.0.59",
         "@ai-sdk/openai": "^4.0.84",
+        "@ai-sdk/provider": "^4.0.22",
         "@opentui/core": "^0.5.14",
         "ai": "^7.0.128",
         "zod": "^4.6.5",

@@ -23,7 +23,6 @@ export async function runApp(opts: AppOptions): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     targetFps: 30,
-    backgroundColor: theme.bg,
     onDestroy: () => resolveDone(),
   })
 
@@ -31,7 +30,6 @@ export async function runApp(opts: AppOptions): Promise<void> {
     width: "100%",
     height: "100%",
     flexDirection: "column",
-    backgroundColor: theme.bg,
   })
   const main = new BoxRenderable(renderer, {
     width: "100%",
@@ -47,7 +45,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
   })
   const filePane = new FilePane(renderer, { width: "26%", budgetTokens: opts.fileBudgetTokens })
 
-  const footer = new TextRenderable(renderer, { content: "", fg: theme.dim, wrapMode: "none" })
+  const footer = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "none" })
 
   main.add(taskPane.box)
   main.add(chatPane.box)
@@ -113,19 +111,27 @@ export async function runApp(opts: AppOptions): Promise<void> {
   }
 
   renderer.keyInput.on("keypress", (key) => {
-    if (key.name === "up") {
+    const snapshot = opts.runtime.snapshot()
+    const choiceActive =
+      snapshot.mode === "waiting_for_user" && (snapshot.userRequest?.choices?.length ?? 0) > 0
+
+    // Arrows only mean something while a choice prompt is on screen. Otherwise
+    // they belong to the chat input.
+    if (choiceActive && key.name === "up") {
       moveChoice(-1)
       key.preventDefault()
       key.stopPropagation()
       return
     }
-    if (key.name === "down") {
+    if (choiceActive && key.name === "down") {
       moveChoice(1)
       key.preventDefault()
       key.stopPropagation()
       return
     }
-    if (key.name === "h" && chatPane.input.value === "" && !key.ctrl && !key.meta) {
+
+    // Ctrl+T toggles frame history. A bare "h" would be swallowed while typing.
+    if (key.ctrl && key.name === "t") {
       showHistory = !showHistory
       key.preventDefault()
       key.stopPropagation()
@@ -168,9 +174,9 @@ function renderFooter(
 
   const hint =
     state.mode === "waiting_for_user"
-      ? "waiting for you · ↑/↓ choose · Enter select · type a reply"
+      ? "waiting for you · ↑/↓ choose · Enter select · or type a reply"
       : state.mode === "push"
-        ? "type a task · h history · ctrl+c quit"
+        ? "type a task · ctrl+t history · ctrl+c quit"
         : "working… · ctrl+c quit"
   const m = state.metrics
   const stats = `llm ${m.llmCalls} · tools ${m.toolCalls} · files ${state.files.length} · depth ${state.stack.length}`

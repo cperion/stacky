@@ -6,7 +6,7 @@ import { attachSessionAutosave, loadSession } from "./agent/persistence.ts"
 import { attachTraceLogger } from "./agent/logger.ts"
 import { AiSdkClient } from "./llm/ai.ts"
 import { DemoLLM } from "./llm/scripted.ts"
-import { createModel, detectProvider, type ProviderName } from "./llm/providers.ts"
+import { createModel, type ProviderName } from "./llm/providers.ts"
 import { runApp } from "./tui/app.ts"
 import type { LLMClient } from "./llm/client.ts"
 
@@ -14,6 +14,7 @@ const { values, positionals } = parseArgs({
   options: {
     mock: { type: "boolean", default: false },
     headless: { type: "boolean", default: false },
+    thinking: { type: "boolean", default: false },
     provider: { type: "string" },
     model: { type: "string" },
     cwd: { type: "string" },
@@ -78,22 +79,29 @@ function createLLM(): { llm: LLMClient; providerLabel: string } {
   if (values.mock) {
     return { llm: new DemoLLM(), providerLabel: "mock/demo" }
   }
-  const provider: ProviderName = (values.provider as ProviderName | undefined) ?? detectProvider()
-  const created = createModel({
-    provider,
+  const provider = values.provider as ProviderName | undefined
+  const spec = createModel({
+    ...(provider ? { provider } : {}),
     ...(values.model ? { model: values.model } : {}),
+    thinking: Boolean(values.thinking),
   })
-  const hasKey = Boolean(process.env[`${provider.toUpperCase()}_API_KEY`])
+
+  const hasKey = Boolean(process.env[`${spec.provider.toUpperCase()}_API_KEY`])
   if (!hasKey) {
     console.error(
-      `No API key found for provider "${provider}" (expected ${provider.toUpperCase()}_API_KEY).\n` +
+      `No API key found for provider "${spec.provider}" (expected ${spec.provider.toUpperCase()}_API_KEY).\n` +
         `Run with --mock for the offline demo, or set the key.`,
     )
     process.exit(1)
   }
+
   return {
-    llm: new AiSdkClient(created.model, { temperature: 0 }),
-    providerLabel: `${created.provider}/${created.modelId}`,
+    llm: new AiSdkClient(spec.model, {
+      ...(spec.toolChoice === "required" ? { temperature: 0 } : {}),
+      toolChoice: spec.toolChoice,
+      ...(spec.providerOptions ? { providerOptions: spec.providerOptions } : {}),
+    }),
+    providerLabel: `${spec.provider}/${spec.modelId}${values.thinking ? " · thinking" : ""}`,
   }
 }
 
@@ -171,8 +179,9 @@ Options:
   --task <text>            Initial task to give the agent
   --mock                   Use the offline demo model (no API key needed)
   --headless               Run without the TUI (streams events to stdout)
-  --provider <name>        openai | anthropic | deepseek (default: auto-detect)
-  --model <id>             Model id override
+  --provider <name>        openai | anthropic | deepseek (default: deepseek)
+  --model <id>             Model id override (default: deepseek-flash)
+  --thinking               Keep the model's reasoning mode on (forces toolChoice auto)
   --cwd <path>             Workspace root (default: current directory)
   --file-budget <tokens>   File working-set token budget (default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
@@ -187,7 +196,11 @@ Environment:
 Keys (TUI):
   Enter       send message / choose highlighted option
   ↑ / ↓       move between choices when the agent asks a question
-  h           toggle closed-frame history in the task pane
+  Ctrl+T      toggle closed-frame history in the task pane
   Ctrl+C      quit
+
+Defaults:
+  provider    deepseek (falls back to whichever API key is set)
+  model       deepseek-flash
 `)
 }

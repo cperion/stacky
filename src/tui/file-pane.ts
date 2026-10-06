@@ -9,7 +9,7 @@ import {
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState } from "../agent/types.ts"
-import { theme } from "./theme.ts"
+import { theme, scrollbarTheme } from "./theme.ts"
 import { concat, formatTokens, plain, progressBar, type Dimension, type Part } from "./render.ts"
 
 export class FilePane {
@@ -25,10 +25,9 @@ export class FilePane {
       height: "100%",
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.border,
-      backgroundColor: theme.panel,
+      borderColor: theme.fg,
       title: " FILE WORKING SET ",
-      titleColor: theme.cyan,
+      titleColor: theme.fg,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -38,10 +37,11 @@ export class FilePane {
       scrollY: true,
       scrollX: false,
       stickyScroll: false,
+      scrollbarOptions: scrollbarTheme,
     })
     this.text = new TextRenderable(renderer, {
       content: "",
-      fg: theme.text,
+      fg: theme.fg,
       wrapMode: "word",
     })
     this.scroll.add(this.text)
@@ -54,11 +54,11 @@ export class FilePane {
     const pressureColor = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.green
 
     const parts: Part[] = [
-      t`${bold(fg(theme.cyan)("TOKENS"))} ${formatTokens(used)} / ${formatTokens(this.budgetTokens)} ${dim(`(${Math.round(ratio * 100)}%)`)}`,
+      t`${bold("TOKENS")} ${formatTokens(used)} / ${formatTokens(this.budgetTokens)} ${dim(`(${Math.round(ratio * 100)}%)`)}`,
       plain("\n"),
       t`${fg(pressureColor)(progressBar(ratio))}`,
       plain("\n\n"),
-      t`${bold(fg(theme.cyan)("HOT"))}`,
+      t`${bold("HOT")}`,
     ]
 
     if (state.files.length === 0) {
@@ -67,12 +67,12 @@ export class FilePane {
     } else {
       for (const file of state.files) {
         parts.push(plain("\n"))
-        parts.push(t`${fg(theme.text)(file.path.padEnd(24))} ${dim(formatTokens(file.tokenCount))}`)
+        parts.push(t`${file.path.padEnd(24)} ${dim(formatTokens(file.tokenCount))}`)
       }
     }
 
     parts.push(plain("\n\n"))
-    parts.push(t`${bold(fg(theme.cyan)("COLD"))}`)
+    parts.push(t`${bold("COLD")}`)
     parts.push(plain("\n"))
     parts.push(dim("eviction order: least recently used"))
 
