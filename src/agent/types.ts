@@ -17,6 +17,8 @@ export type Todo = {
 
 export type TaskFrame = {
   id: string
+  /** Monotonic creation order, for the linear history stripe. */
+  seq: number
   /** Short imperative title for display (falls back to the first line of why). */
   title: string
   why: string

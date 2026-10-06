@@ -16,6 +16,7 @@ import { block, clampLines, concat, fit, formatTokens, plain, prefixLines, quote
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
+import { historyStripe } from "./history.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -57,7 +58,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   // ---- footer (dashboard) -------------------------------------------------
 
   const footer = new BoxRenderable(renderer, { width: "100%", height: 3, flexDirection: "column" })
+  let footerRows = 3
   const status = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
+  const historyLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const dashboard = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const live = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
   const promptRow = new BoxRenderable(renderer, { width: "100%", height: 1, flexDirection: "row" })
@@ -81,6 +84,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     flexGrow: 1,
   })
   promptRow.add(input)
+  footer.add(historyLine)
   footer.add(dashboard)
   footer.add(live)
   footer.add(promptRow)
@@ -214,8 +218,20 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     dashboard.content = pane
     const rows = countLines(pane)
     dashboard.height = rows
-    footer.height = rows + 3
-    renderer.footerHeight = rows + 3
+
+    const stripe = historyStripe(state, rendererWidth())
+    historyLine.content = concat(stripe)
+    const stripeRows = stripe.length > 0 ? 2 : 0
+    historyLine.height = stripeRows
+
+    // Only touch the split-footer size when it actually changes — resizing it on
+    // every tick disturbs the scroll region.
+    const total = stripeRows + rows + 3
+    if (total !== footerRows) {
+      footerRows = total
+      footer.height = total
+      renderer.footerHeight = total
+    }
 
     live.content = liveContent(state)
   }

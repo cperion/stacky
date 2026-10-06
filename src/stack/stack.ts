@@ -14,6 +14,7 @@ export function createFrame(action: PushAction, now = Date.now()): TaskFrame {
   }))
   return {
     id: `f${frameCounter}-${randomUUID().slice(0, 8)}`,
+    seq: frameCounter,
     title: action.title?.trim() || fallbackTitle,
     why: action.why,
     scope: action.scope,
