@@ -1,5 +1,6 @@
 import {
   bold,
+  bg,
   BoxRenderable,
   dim,
   fg,
@@ -13,7 +14,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, paneInner, clampLines, concat, fit, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
+import { block, paneInner, clampLines, concat, fit, header, padLines, paneRule, plain, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -124,7 +125,7 @@ export class ChatPane {
       case "action":
         return this.renderAction(entry.text, width)
       case "observation":
-        return [dim(block(clampLines(entry.text, 16), width, 2, "│"))]
+        return [bg(theme.panel)(padLines(block(clampLines(entry.text, 16), width, 2, "│"), width))]
       case "protocol":
         return [fg(theme.red)(block(entry.text, width, 2, "✗"))]
     }

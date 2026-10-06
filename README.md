@@ -83,7 +83,57 @@ Contrast comes from **hierarchy**, not from hardcoded colours:
 - Semantic colours are ANSI palette indices (red/green/yellow/blue/magenta/cyan),
   so they follow the terminal's own theme.
 
+## Interfaces
+
+Two interfaces share the same runtime and can be switched at runtime:
+
+- **Panes** (default) — a fixed three-pane alternate-screen layout.
+- **REPL** (`--ui repl`) — output flows into the terminal's real scrollback and only
+a compact status + prompt footer stays pinned at the bottom, like a shell.
+
+```
+stacky  ·  REPL mode. Type a task, or /help for commands.
+▌ You
+  fix the failing test
+▌ Thinking
+  │ The failure is in the token parser, so I should read it first.
+  → read  ({"path":"src/token.ts"})
+  │ read src/token.ts: 84 lines, ~900 tokens.
+▌ Agent
+  Fixed it. Tests pass.
+
+ EXECUTE   deepseek/deepseek-flash · llm 6 · depth 1 · files 3   ctrl+c quit · /help
+❯ _
+```
+
+REPL keys: `↑`/`↓` recall previous inputs; `j`/`k`/`l` move and select the choice
+list when the agent asks a question (while the prompt is empty); everything else is
+ordinary typing. Slash commands replace the settings menu:
+
+```
+/help                 list commands
+/model [provider/id]  show or choose a model
+/thinking [on|off]    toggle the model's reasoning mode
+/thinking-blocks      toggle thinking display
+/status               runtime status
+/new                  reset the session
+/ui panes             switch to the panes interface
+/quit                 exit
+```
+
+In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the REPL,
+`/ui panes` switches back. The selection is stored in the config file.
+
+Switch with `--ui panes|repl` on the command line as well.
+
+### Tool-output panel
+
+Tool output is drawn on a subtle ANSI background (`48;5;8`, the terminal's bright
+black) with the default foreground, so it reads as a distinct block while still
+following the terminal palette rather than a hardcoded colour.
+
 ## Streaming & thinking
+
 
 The model is called with `streamText`, so the UI updates as the model works:
 

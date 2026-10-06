@@ -1,11 +1,12 @@
 import type { MenuItem } from "./menu.ts"
-import type { SettingsController } from "./settings.ts"
+import type { SettingsController, UiMode } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 import { hasApiKey, type ProviderName } from "../llm/providers.ts"
 
 export type MenuContext = SettingsController & {
   close: () => void
   resetSession: () => void
+  switchUi: (mode: UiMode) => void
   quit: () => void
 }
 
@@ -54,6 +55,14 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
         cfg.showThinking = v
         ctx.persist()
       },
+    },
+    {
+      kind: "choice",
+      label: "Interface",
+      hint: "panes / repl",
+      value: () => cfg.ui,
+      options: () => ["panes", "repl"],
+      set: (v) => ctx.switchUi(v as UiMode),
     },
     { kind: "separator", label: "Context" },
     {

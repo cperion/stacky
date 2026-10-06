@@ -132,6 +132,15 @@ export function paneInner(box: BoxRenderable, renderer: CliRenderer, frac: numbe
   return Math.max(12, width - pad)
 }
 
+/** Pad every line to exactly `width` columns (so a background spans the row). */
+export function padLines(text: string, width: number): string {
+  const limit = Math.max(1, width)
+  return text
+    .split("\n")
+    .map((line) => (line.length >= limit ? line.slice(0, limit) : line + " ".repeat(limit - line.length)))
+    .join("\n")
+}
+
 /** Clamp text to a maximum number of lines, appending a marker when truncated. */
 export function clampLines(text: string, maxLines: number): string {
   const split = text.split("\n")

@@ -8,7 +8,7 @@ import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { theme } from "./theme.ts"
 import { concat, plain } from "./render.ts"
-import type { SettingsController } from "./settings.ts"
+import type { SettingsController, UiResult } from "./settings.ts"
 
 export type AppOptions = {
   runtime: AgentRuntime
@@ -21,7 +21,8 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const RENDER_INTERVAL_MS = 33
 const SPINNER_INTERVAL_MS = 90
 
-export async function runApp(opts: AppOptions): Promise<void> {
+export async function runApp(opts: AppOptions): Promise<UiResult> {
+  let result: UiResult = "quit"
   let resolveDone: () => void = () => {}
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve
@@ -120,7 +121,16 @@ export async function runApp(opts: AppOptions): Promise<void> {
       opts.runtime.reset()
       selectedChoice = 0
     },
-    quit: () => renderer.destroy(),
+    switchUi: (mode) => {
+      result = "switch"
+      opts.settings.config.ui = mode
+      opts.settings.persist()
+      renderer.destroy()
+    },
+    quit: () => {
+      result = "quit"
+      renderer.destroy()
+    },
   }
 
   function setMenuOpen(open: boolean): void {
@@ -304,6 +314,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
   }
 
   await done
+  return result
 }
 
 function buildFooter(

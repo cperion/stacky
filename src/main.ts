@@ -9,7 +9,8 @@ import { DemoLLM } from "./llm/scripted.ts"
 import { configPath, loadConfig, saveConfig, type StackyConfig } from "./config.ts"
 import type { ProviderName } from "./llm/providers.ts"
 import { runApp } from "./tui/app.ts"
-import type { SettingsController } from "./tui/settings.ts"
+import { runRepl } from "./tui/repl.ts"
+import type { SettingsController, UiResult } from "./tui/settings.ts"
 import type { ModelInfo } from "./llm/factory.ts"
 
 const { values, positionals } = parseArgs({
@@ -24,6 +25,7 @@ const { values, positionals } = parseArgs({
     "file-budget": { type: "string" },
     "conversation-budget": { type: "string" },
     config: { type: "string" },
+    ui: { type: "string" },
     session: { type: "string" },
     trace: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
@@ -43,6 +45,7 @@ const config: StackyConfig = loadConfig(values.config ? resolve(values.config) :
 if (values.provider) config.provider = values.provider as ProviderName
 if (values.model) config.model = values.model
 if (values.thinking !== undefined) config.thinking = values.thinking
+if (values.ui === "panes" || values.ui === "repl") config.ui = values.ui
 if (values["file-budget"]) config.fileBudgetTokens = numberOption(values["file-budget"], config.fileBudgetTokens)
 if (values["conversation-budget"])
   config.conversationBudgetTokens = numberOption(values["conversation-budget"], config.conversationBudgetTokens)
@@ -112,12 +115,37 @@ if (values.headless) {
   if (resumeNote) console.log(resumeNote)
   await runHeadless(runtime, initialTask)
 } else {
-  await runApp({
-    runtime,
-    settings,
-    initialTask,
-    ...(resumeNote ? { notice: resumeNote } : {}),
-  })
+  let firstRun = true
+  let uiMode = config.ui
+  for (;;) {
+    const runOptions = {
+      runtime,
+      settings,
+      ...(firstRun && initialTask ? { initialTask } : {}),
+      ...(firstRun && resumeNote ? { notice: resumeNote } : {}),
+    }
+    let outcome: UiResult
+    try {
+      outcome = uiMode === "repl" ? await runRepl(runOptions) : await runApp(runOptions)
+    } catch (error) {
+      if (uiMode === "repl") {
+        console.error(
+          `Could not start the REPL interface (${error instanceof Error ? error.message : String(error)}).\n` +
+            `Falling back to the panes interface.`,
+        )
+        config.ui = "panes"
+        uiMode = "panes"
+        continue
+      }
+      throw error
+    }
+    firstRun = false
+    if (outcome === "switch") {
+      uiMode = config.ui
+      continue
+    }
+    break
+  }
 }
 
 async function runHeadless(runtime: AgentRuntime, task: string | undefined): Promise<void> {
@@ -200,6 +228,7 @@ Options:
   --file-budget <tokens>   File working-set token budget (default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
   --config <path>          Config file (default: ${configPath()})
+  --ui <mode>              panes | repl (default: from config, usually panes)
   --session <path>         Persist/restore task state (JSON). File contents are never stored.
   --trace <path>           Append a JSONL execution trace
   -h, --help               Show this help
@@ -208,15 +237,19 @@ Environment:
   DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
   STACKY_PROVIDER, STACKY_MODEL, STACKY_CONFIG
 
-Keys (TUI, vim-style):
-  Enter       send message / activate menu item / select choice
-  j / k       move down / up (choices, menus)
-  h / l       back / forward (menus); l selects a choice
-  g / G       jump to top / bottom of a menu
-  Esc         close the menu, or clear a half-typed message
+Keys (TUI):
+  Enter       send message / choose highlighted option / activate menu item
+  ↑ / ↓       move through choices, menus and history
   Ctrl+P      model, thinking and settings menu
   Ctrl+T      toggle closed-frame history in the task pane
+  Esc / ←     close or step back in a menu
   Ctrl+C      quit
+
+REPL mode (--ui repl):
+  Output flows into the terminal scrollback; the footer holds status + prompt.
+  ↑ / ↓       recall previous inputs
+  j / k / l   move/select the choice list when the agent asks (prompt empty)
+  /help       list commands (/model, /thinking, /status, /new, /ui panes, /quit)
 
 Defaults:
   provider    deepseek (falls back to whichever API key is set)

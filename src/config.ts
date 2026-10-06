@@ -11,6 +11,8 @@ export type StackyConfig = {
   thinking: boolean
   /** Render thinking blocks in the chat. */
   showThinking: boolean
+  /** Which interface to launch. */
+  ui: "panes" | "repl"
   fileBudgetTokens: number
   conversationBudgetTokens: number
 }
@@ -21,6 +23,7 @@ export function defaultConfig(): StackyConfig {
     model: "deepseek-flash",
     thinking: false,
     showThinking: true,
+    ui: "panes",
     fileBudgetTokens: 24_000,
     conversationBudgetTokens: 32_000,
   }

@@ -28,6 +28,8 @@ export const theme = {
   /** Bright black: AA muted tone for structure (borders, rules, secondary text). */
   dim: RGBA.fromIndex(8),
   gray: RGBA.fromIndex(8),
+  /** Subtle ANSI background for tool-output blocks (terminal palette, index 8). */
+  panel: RGBA.fromIndex(8),
 } as const
 
 /** Terminal-native scrollbar colours, shared by every pane. */
