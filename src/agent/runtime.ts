@@ -1,0 +1,425 @@
+import { randomUUID } from "node:crypto"
+import type { ModelAction, PopAction, PushAction, ToolName, UserRequestAction } from "../stack/schemas.ts"
+import type {
+  AgentMode,
+  AgentState,
+  ClosedFrame,
+  TaskFrame,
+  UserRequestRecord,
+} from "./types.ts"
+import { TaskStack } from "../stack/stack.ts"
+import { ConversationBuffer } from "./conversation.ts"
+import { FileWorkingSet } from "../files/lru.ts"
+import { EventBus, type RuntimeEvent } from "./events.ts"
+import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
+import { ProtocolError, type LLMClient, type ModelInput } from "../llm/client.ts"
+import { runBash } from "../tools/bash.ts"
+import { runRead } from "../tools/read.ts"
+import { runEdit } from "../tools/edit.ts"
+
+export type AgentRuntimeOptions = {
+  cwd: string
+  llm: LLMClient
+  bus?: EventBus
+  fileBudgetTokens?: number
+  conversationBudgetTokens?: number
+  maxProtocolErrors?: number
+  maxStepsPerRun?: number
+  maxStackDepth?: number
+}
+
+const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
+  push: ["push", "user", "read", "bash"],
+  execute: ["bash", "read", "edit", "push", "pop", "user"],
+  waiting_for_user: [],
+}
+
+/**
+ * Owns the agent state machine. The model only chooses actions; the runtime
+ * decides what they mean, always calling the model again after internal
+ * operations and yielding only at the user() boundary.
+ */
+export class AgentRuntime {
+  readonly bus: EventBus
+  readonly cwd: string
+
+  private llm: LLMClient
+  private stack = new TaskStack()
+  private conversation: ConversationBuffer
+  private files: FileWorkingSet
+  private closedFrames: ClosedFrame[] = []
+
+  private mode: AgentMode = "push"
+  private userRequest?: UserRequestRecord
+  private observation = ""
+  private running = false
+  private protocolErrors = 0
+
+  private readonly maxProtocolErrors: number
+  private readonly maxStepsPerRun: number
+  private readonly maxStackDepth: number
+
+  constructor(opts: AgentRuntimeOptions) {
+    this.cwd = opts.cwd
+    this.llm = opts.llm
+    this.bus = opts.bus ?? new EventBus()
+    this.conversation = new ConversationBuffer(opts.conversationBudgetTokens ?? 32_000)
+    this.files = new FileWorkingSet({ cwd: opts.cwd, budgetTokens: opts.fileBudgetTokens ?? 24_000 })
+    this.maxProtocolErrors = opts.maxProtocolErrors ?? 3
+    this.maxStepsPerRun = opts.maxStepsPerRun ?? 80
+    this.maxStackDepth = opts.maxStackDepth ?? 16
+  }
+
+  get isRunning(): boolean {
+    return this.running
+  }
+
+  get isWaitingForUser(): boolean {
+    return this.mode === "waiting_for_user"
+  }
+
+  snapshot(): AgentState {
+    return {
+      mode: this.mode,
+      conversation: [...this.conversation.entries()],
+      stack: [...this.stack.list()],
+      closedFrames: [...this.closedFrames],
+      files: this.files.list(),
+      userRequest: this.userRequest,
+    }
+  }
+
+  /** External human input. Resumes a suspended frame, or starts a new request. */
+  async request(text: string): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed) return
+
+    if (this.mode === "waiting_for_user" && this.userRequest) {
+      const record = this.userRequest
+      record.resolved = true
+      record.answer = trimmed
+      this.bus.emit({ type: "user.resolved", request: record })
+      this.conversation.add("user", trimmed)
+      this.userRequest = undefined
+      this.mode = this.stack.isEmpty ? "push" : "execute"
+      this.emitState()
+      await this.run()
+      return
+    }
+
+    if (this.running) {
+      // The UI should not allow this, but never lose the input silently.
+      throw new Error("Agent is already running; wait for it to yield before sending input.")
+    }
+
+    this.conversation.add("user", trimmed)
+    this.mode = this.stack.isEmpty ? "push" : "execute"
+    this.emitState()
+    await this.run()
+  }
+
+  /** The automatic agent loop. Runs until a user boundary or a hard stop. */
+  async run(): Promise<void> {
+    if (this.running) return
+    this.running = true
+    try {
+      let steps = 0
+      while (steps < this.maxStepsPerRun) {
+        if (this.mode === "waiting_for_user") break
+        steps += 1
+
+        const result = await this.invokeModel()
+        if (result.kind === "stop") return
+        if (result.kind === "continue") continue
+
+        const shouldContinue = await this.dispatch(result.action)
+        if (!shouldContinue) return
+      }
+      this.fail(`Step limit reached (${this.maxStepsPerRun}) without reaching a user boundary.`)
+    } finally {
+      this.running = false
+      this.emitState()
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Model invocation
+  // ---------------------------------------------------------------------------
+
+  private async invokeModel(): Promise<
+    { kind: "action"; action: ModelAction } | { kind: "continue" } | { kind: "stop" }
+  > {
+    const allowedTools = this.allowedTools()
+    const input: ModelInput = {
+      system: buildSystemPrompt(allowedTools),
+      prompt: buildUserPrompt({
+        mode: this.mode,
+        conversation: this.conversation.entries(),
+        stack: this.stack.list(),
+        files: this.files.materialize(),
+        fileBudgetTokens: this.files.budgetTokens,
+        fileUsedTokens: this.files.totalTokens(),
+        observation: this.observation,
+      }),
+      allowedTools,
+      mode: this.mode,
+    }
+
+    this.bus.emit({ type: "model.call.started", mode: this.mode })
+    try {
+      const action = await this.llm.step(input)
+      this.bus.emit({ type: "model.call.finished", tool: action.tool })
+      return { kind: "action", action }
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        this.protocolErrors += 1
+        const message = `PROTOCOL ERROR: ${error.message}`
+        this.observation = message
+        this.conversation.add("protocol", message)
+        this.bus.emit({ type: "protocol.error", message: error.message })
+        this.emitState()
+
+        if (this.protocolErrors > this.maxProtocolErrors) {
+          this.fail(
+            `The model failed to produce a valid tool call ${this.protocolErrors} times in a row. Last error: ${error.message}`,
+          )
+          return { kind: "stop" }
+        }
+        return { kind: "continue" }
+      }
+      this.fail(error instanceof Error ? error.message : String(error))
+      return { kind: "stop" }
+    }
+  }
+
+  private allowedTools(): ToolName[] {
+    if (this.mode === "waiting_for_user") return []
+    if (this.mode === "execute" && this.stack.isEmpty) return ["push", "user"]
+    return MODE_TOOLS[this.mode]
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dispatch
+  // ---------------------------------------------------------------------------
+
+  /** Returns false when the loop must stop (user boundary or terminal state). */
+  private async dispatch(action: ModelAction): Promise<boolean> {
+    const violation = this.validateAction(action)
+    if (violation) {
+      this.protocolErrors += 1
+      this.observation = `PROTOCOL ERROR: ${violation}`
+      this.conversation.add("protocol", this.observation)
+      this.bus.emit({ type: "protocol.error", message: violation })
+      if (this.protocolErrors > this.maxProtocolErrors) {
+        this.fail(`Repeated invalid actions. Last: ${violation}`)
+      }
+      return true
+    }
+
+    this.protocolErrors = 0
+
+    switch (action.tool) {
+      case "bash":
+        return this.handleBash(action.input.command, action.input.timeoutMs)
+      case "read":
+        return this.handleRead(action.input.path)
+      case "edit":
+        return this.handleEdit(action.input.path, action.input.edits)
+      case "push":
+        return this.handlePush(action.input)
+      case "pop":
+        return this.handlePop(action.input)
+      case "user":
+        return this.handleUser(action.input)
+    }
+  }
+
+  private validateAction(action: ModelAction): string | undefined {
+    if (!MODE_TOOLS[this.mode].includes(action.tool)) {
+      return `Tool "${action.tool}" is not available in ${this.mode} mode.`
+    }
+    if (action.tool === "pop" && this.stack.isEmpty) {
+      return "Cannot pop: the task stack is empty."
+    }
+    if (action.tool === "push" && this.stack.depth >= this.maxStackDepth) {
+      return `Cannot push: maximum stack depth (${this.maxStackDepth}) reached.`
+    }
+    const requiresFrame: ToolName[] = ["bash", "read", "edit", "pop"]
+    if (requiresFrame.includes(action.tool) && this.stack.isEmpty) {
+      return `Tool "${action.tool}" requires an active task frame. Push one first, or report to the user.`
+    }
+    return undefined
+  }
+
+  private async handleBash(command: string, timeoutMs?: number): Promise<boolean> {
+    this.bus.emit({ type: "tool.started", tool: "bash" })
+    const result = await runBash(command, { cwd: this.cwd, timeoutMs })
+    this.bus.emit({ type: "tool.finished", tool: "bash", ok: result.ok })
+
+    const value = result.value
+    const observation = result.ok
+      ? `$ ${command}\n(exit ${value?.exitCode ?? 0})\n${value?.output ?? ""}`
+      : `$ ${command}\nFAILED: ${result.error ?? "unknown error"}${value ? `\n(exit ${value.exitCode})\n${value.output}` : ""}`
+
+    this.record("bash", { command }, observation)
+    return true
+  }
+
+  private handleRead(path: string): boolean {
+    this.bus.emit({ type: "tool.started", tool: "read" })
+    const result = runRead(path, { cwd: this.cwd })
+    this.bus.emit({ type: "tool.finished", tool: "read", ok: result.ok })
+
+    if (!result.ok || !result.value) {
+      this.record("read", { path }, `read ${path} FAILED: ${result.error ?? "unknown error"}`)
+      return true
+    }
+
+    const { evicted, entry } = this.files.promote(path)
+    this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
+    for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
+
+    const lines = result.value.content.split("\n").length
+    const note = result.value.truncated ? " (truncated)" : ""
+    this.record(
+      "read",
+      { path },
+      `read ${path}: ${lines} lines, ~${entry.tokenCount} tokens${note}. Current contents are now in CURRENT FILE WORKING SET.`,
+    )
+    return true
+  }
+
+  private handleEdit(path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[]): boolean {
+    this.bus.emit({ type: "tool.started", tool: "edit" })
+    const result = runEdit(path, edits, { cwd: this.cwd })
+    this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })
+
+    if (!result.ok || !result.value) {
+      this.record("edit", { path, edits: edits.length }, `edit ${path} FAILED: ${result.error ?? "unknown error"}`)
+      return true
+    }
+
+    const { evicted, entry } = this.files.promote(path)
+    this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
+    for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
+
+    const verb = result.value.created ? "created" : "edited"
+    this.record(
+      "edit",
+      { path, edits: edits.length },
+      `${verb} ${path}: ${result.value.replacements} replacement(s), now ~${entry.tokenCount} tokens. Updated contents are in CURRENT FILE WORKING SET.`,
+    )
+    return true
+  }
+
+  private handlePush(action: PushAction): boolean {
+    const frame = this.stack.push(action)
+    this.mode = "execute"
+    this.bus.emit({ type: "frame.pushed", frame })
+    this.record("push", { why: action.why }, `Pushed frame ${frame.id}. It is now TOP of stack.`)
+    return true
+  }
+
+  private handlePop(action: PopAction): boolean {
+    let closed: ClosedFrame
+    try {
+      closed = this.stack.pop(action)
+    } catch (error) {
+      this.record("pop", { outcome: action.outcome }, `pop FAILED: ${error instanceof Error ? error.message : String(error)}`)
+      return true
+    }
+    this.closedFrames.push(closed)
+    this.bus.emit({ type: "frame.popped", frame: closed })
+    this.record(
+      "pop",
+      { outcome: action.outcome },
+      `Popped frame ${closed.intent.id} (outcome: ${closed.disposition.outcome}). Stack depth is now ${this.stack.depth}.`,
+    )
+    return true
+  }
+
+  private handleUser(action: UserRequestAction): boolean {
+    const record: UserRequestRecord = {
+      ...action,
+      choices: action.choices ?? undefined,
+      id: randomUUID(),
+      at: Date.now(),
+      resolved: false,
+    }
+    this.userRequest = record
+    this.conversation.add("agent", formatUserMessage(record))
+    this.bus.emit({ type: "user.request", request: record })
+
+    if (action.response === "required") {
+      this.mode = "waiting_for_user"
+      this.bus.emit({ type: "state.changed" })
+      return false
+    }
+
+    // optional / none: report and yield without waiting.
+    this.userRequest = undefined
+    this.mode = this.stack.isEmpty ? "push" : "execute"
+    this.bus.emit({ type: "state.changed" })
+    return false
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private record(tool: string, input: unknown, observation: string): void {
+    const compact = compactJson(input)
+    this.conversation.add("action", `${tool}(${compact})`)
+    this.conversation.add("observation", observation)
+    this.observation = observation
+    this.emitState()
+  }
+
+  private fail(message: string): void {
+    this.bus.emit({ type: "fatal", message })
+    this.conversation.add("protocol", `FATAL: ${message}`)
+    this.observation = `FATAL: ${message}`
+    this.userRequest = {
+      id: randomUUID(),
+      at: Date.now(),
+      message: `The agent stopped due to an error:\n\n${message}`,
+      response: "none",
+      resolved: true,
+    }
+    this.mode = this.stack.isEmpty ? "push" : "execute"
+    this.emitState()
+  }
+
+  private emitState(): void {
+    this.bus.emit({ type: "state.changed" })
+  }
+}
+
+function compactJson(value: unknown, maxLength = 300): string {
+  let text: string
+  try {
+    text = JSON.stringify(value)
+  } catch {
+    text = String(value)
+  }
+  if (text && text.length > maxLength) return `${text.slice(0, maxLength)}…`
+  return text ?? ""
+}
+
+export function formatUserMessage(request: UserRequestRecord): string {
+  const lines = [request.message]
+  if (request.choices && request.choices.length > 0) {
+    lines.push("")
+    request.choices.forEach((choice, index) => {
+      const recommended = request.preferredChoice?.id === choice.id ? " [recommended]" : ""
+      lines.push(`${index + 1}. ${choice.label}${recommended}`)
+      if (choice.description) lines.push(`   ${choice.description}`)
+    })
+    if (request.preferredChoice) {
+      lines.push("", `Recommended: ${request.preferredChoice.id} — ${request.preferredChoice.reason}`)
+    }
+  }
+  return lines.join("\n")
+}
+
+export type { RuntimeEvent }
