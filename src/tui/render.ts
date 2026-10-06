@@ -117,6 +117,12 @@ export function rightAlign(value: string, width: number): string {
   return value.length >= width ? value : " ".repeat(width - value.length) + value
 }
 
+/** Truncate to `width` columns with an ellipsis. */
+export function clipText(text: string, width: number): string {
+  if (width <= 1) return ""
+  return text.length <= width ? text : `${text.slice(0, width - 1)}…`
+}
+
 /** Pad with spaces (or truncate) to exactly `width` columns. */
 export function fit(text: string, width: number): string {
   if (width <= 0) return text

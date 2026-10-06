@@ -135,6 +135,23 @@ In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the 
 
 Switch with `--ui panes|repl` on the command line as well.
 
+**Slash commands are identical in both interfaces** — type `/help`, `/model`,
+`/status`, `/theme`, `/new`, `/ui` or `/quit` in either prompt. In the panes
+interface the output appears in the chat; in the REPL it goes to the scrollback.
+
+### Markdown & diffs
+
+Agent and user messages render as markdown: headings, bullet/numbered lists, fenced
+code blocks, blockquotes and rules, plus inline `code`, **bold**, *italic*,
+~~strike~~ and [links](url). `edit()` tool calls render as a **diff** — removals in
+red, additions in green:
+
+```
+  → edit  server.js
+          - export const PORT = 3000
+          + export const PORT = 8080
+```
+
 ### Shading (user input + tool output only)
 
 The interface itself stays **terminal-native** — panes, chat text, footer and input all

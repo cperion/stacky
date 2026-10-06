@@ -174,6 +174,12 @@ export class AgentRuntime {
     this.emitState()
   }
 
+  /** Add a neutral system note to the transcript (UI/command output). */
+  note(message: string): void {
+    this.conversation.add("note", message)
+    this.emitState()
+  }
+
   /**
    * Restore a persisted session. File contents are re-materialized from disk
    * on the next inference, so a restart cannot resurrect stale code.
@@ -470,7 +476,7 @@ export class AgentRuntime {
       this.bus.emit({ type: "tool.finished", tool: "edit", ok: false })
       this.record(
         "edit",
-        { path, edits: edits.length },
+        { path, edits },
         `refused: ${path} is not in your working set. Call read("${path}") first, then retry the edit against the current contents.`,
       )
       return true
@@ -481,7 +487,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })
 
     if (!result.ok || !result.value) {
-      this.record("edit", { path, edits: edits.length }, `edit ${path} FAILED: ${result.error ?? "unknown error"}`)
+      this.record("edit", { path, edits }, `edit ${path} FAILED: ${result.error ?? "unknown error"}`)
       return true
     }
 
@@ -494,7 +500,7 @@ export class AgentRuntime {
     const verb = result.value.created ? "created" : "updated"
     this.record(
       "edit",
-      { path, edits: edits.length },
+      { path, edits },
       `${verb} ${path} · ${result.value.replacements} replacement${result.value.replacements === 1 ? "" : "s"} · ~${entry.tokenCount} tokens · now in the working set`,
     )
     return true

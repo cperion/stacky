@@ -8,6 +8,7 @@ import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { applyTheme, theme } from "./theme.ts"
 import { concat, plain } from "./render.ts"
+import { runCommand, type CommandContext } from "./commands.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 
 export type AppOptions = {
@@ -31,6 +32,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     targetFps: 30,
+    useMouse: false,
     onDestroy: () => {
       clearInterval(spinnerTimer)
       resolveDone()
@@ -140,6 +142,14 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     },
   }
 
+  const commandContext: CommandContext = {
+    runtime: opts.runtime,
+    settings: opts.settings,
+    print: (text) => opts.runtime.note(text),
+    switchUi: menuContext.switchUi,
+    quit: menuContext.quit,
+  }
+
   function setMenuOpen(open: boolean): void {
     if (open) {
       menu.open("Settings", buildSettingsMenu(menuContext))
@@ -179,6 +189,12 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   }
 
   function handleSubmit(text: string) {
+    // Slash commands come from the shared registry (same as the REPL).
+    if (text.trim().startsWith("/")) {
+      runCommand(text, commandContext)
+      return
+    }
+
     const state = opts.runtime.snapshot()
     const pending = state.userRequest
     const waiting = state.mode === "waiting_for_user" && pending?.response === "required"

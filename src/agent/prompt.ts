@@ -66,7 +66,7 @@ export function buildUserPrompt(input: PromptInput): string {
 }
 
 function renderConversation(entries: readonly ConversationEntry[]): string {
-  const visible = entries.filter((entry) => entry.role !== "thinking")
+  const visible = entries.filter((entry) => entry.role !== "thinking" && entry.role !== "note")
   if (visible.length === 0) return "# CONVERSATION\n(empty)"
   const lines = visible.map((entry) => `[${entry.role}] ${entry.text}`)
   return `# CONVERSATION (${visible.length} entries)\n${lines.join("\n")}`

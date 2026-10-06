@@ -10,9 +10,14 @@ describe("describeToolCall", () => {
     expect(describeToolCall("read", { path: "src/tui/theme.ts" })).toBe("src/tui/theme.ts")
   })
 
-  test("edit summarises the number of edits", () => {
+  test("edit renders a diff", () => {
+    const out = describeToolCall("edit", { path: "src/a.ts", edits: [{ oldText: "a\nb", newText: "a\nc" }] })
+    expect(out).toBe("src/a.ts\n- a\n- b\n+ a\n+ c")
+  })
+
+  test("edit with no text keeps just the path or an edit count", () => {
+    expect(describeToolCall("edit", { path: "src/a.ts", edits: [{}] })).toBe("src/a.ts")
     expect(describeToolCall("edit", { path: "src/a.ts", edits: [{}, {}] })).toBe("src/a.ts  ·  2 edits")
-    expect(describeToolCall("edit", { path: "src/a.ts", edits: [{}] })).toBe("src/a.ts  ·  1 edit")
   })
 
   test("push shows the first line of why", () => {

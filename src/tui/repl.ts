@@ -13,9 +13,11 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, type Part } from "./render.ts"
+import { renderMarkdown } from "./markdown.ts"
+import { renderToolCall } from "./action.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
-import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
+import { runCommand, type CommandContext } from "./commands.ts"
 
 export type ReplOptions = {
   runtime: AgentRuntime
@@ -44,6 +46,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     footerHeight: FOOTER_HEIGHT,
     exitOnCtrlC: true,
     targetFps: 30,
+    useMouse: false,
     onDestroy: () => resolveDone(result),
   })
 
@@ -135,9 +138,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const entryParts = (entry: ConversationEntry, width: number, showThinking: boolean): StyledText | undefined => {
     switch (entry.role) {
       case "user":
-        return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), plain(block(entry.text, width, 2))])
+        return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "agent":
-        return concat([fg(theme.cyan)("▌ "), bold("Agent"), plain("\n"), plain(block(entry.text, width, 2))])
+        return concat([fg(theme.cyan)("▌ "), bold("Agent"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "thinking":
         if (!showThinking) return undefined
         return concat([
@@ -147,7 +150,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
           italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
         ])
       case "action":
-        return actionParts(entry, width)
+        return renderToolCall(entry, width)
       case "observation":
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
@@ -261,132 +264,20 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   const print = (parts: Part[]): void => writeLine(parts, true)
 
-  const handleCommand = (text: string): boolean => {
-    const [rawCommand, ...rest] = text.slice(1).split(/\s+/)
-    const command = (rawCommand ?? "").toLowerCase()
-    const argument = rest.join(" ").trim()
-
-    switch (command) {
-      case "help":
-        print([
-          bold("Commands"),
-          plain("\n"),
-          dim("  /model [id]        show or choose a model"),
-          plain("\n"),
-          dim("  /thinking [on|off] toggle reasoning mode"),
-          plain("\n"),
-          dim("  /thinking-blocks   toggle thinking display"),
-          plain("\n"),
-          dim("  /theme [mode]      auto | dark | light (restart to apply)"),
-          plain("\n"),
-          dim("  /status            show runtime status"),
-          plain("\n"),
-          dim("  /new               reset the session"),
-          plain("\n"),
-          dim("  /ui panes          switch to the panes interface"),
-          plain("\n"),
-          dim("  /quit              exit"),
-        ])
-        return true
-      case "model": {
-        if (!argument) {
-          const lines: Part[] = [bold("Models"), plain("\n")]
-          for (const provider of PROVIDERS) {
-            for (const model of MODEL_CATALOG[provider]) {
-              const current = opts.settings.config.provider === provider && opts.settings.config.model === model
-              lines.push(plain(`  ${current ? "❯" : " "} ${provider}/${model}`), plain("\n"))
-            }
-          }
-          lines.push(dim("  /model <provider>/<model> to choose"))
-          print(lines)
-          return true
-        }
-        const [providerPart, modelPart] = argument.includes("/") ? argument.split("/", 2) : [undefined, argument]
-        const provider = (providerPart as (typeof PROVIDERS)[number] | undefined) ?? opts.settings.config.provider
-        if (!MODEL_CATALOG[provider]?.includes(modelPart ?? "")) {
-          print([fg(theme.red)(`Unknown model "${argument}". Try /model to list.`)])
-          return true
-        }
-        opts.settings.config.provider = provider
-        opts.settings.config.model = modelPart!
-        opts.settings.rebuildModel()
-        opts.settings.persist()
-        print([plain("Model: "), bold(`${provider}/${modelPart}`)])
-        return true
-      }
-      case "thinking":
-      case "think": {
-        const value = argument ? argument === "on" : !opts.settings.config.thinking
-        opts.settings.config.thinking = value
-        opts.settings.rebuildModel()
-        opts.settings.persist()
-        print([plain(`Thinking ${value ? "on" : "off"}.`)])
-        return true
-      }
-      case "thinking-blocks":
-      case "showthinking": {
-        const value = argument ? argument === "on" : !opts.settings.config.showThinking
-        opts.settings.config.showThinking = value
-        opts.settings.persist()
-        print([plain(`Thinking display ${value ? "on" : "off"}.`)])
-        return true
-      }
-      case "theme": {
-        const valid = ["auto", "dark", "light"]
-        if (!valid.includes(argument)) {
-          print([plain(`Theme is ${opts.settings.config.theme}. Usage: /theme auto|dark|light`) ])
-          return true
-        }
-        opts.settings.config.theme = argument as "auto" | "dark" | "light"
-        opts.settings.persist()
-        print([plain(`Theme set to ${argument}. Restart to apply.`)])
-        return true
-      }
-      case "status": {
-        const state = opts.runtime.snapshot()
-        print([
-          bold("Status"),
-          plain("\n"),
-          dim(`  ui        repl`),
-          plain("\n"),
-          dim(`  mode      ${state.mode}`),
-          plain("\n"),
-          dim(`  model     ${opts.runtime.llmLabel}`),
-          plain("\n"),
-          dim(`  thinking  ${opts.settings.config.thinking ? "on" : "off"}`),
-          plain("\n"),
-          dim(`  depth     ${state.stack.length}`),
-          plain("\n"),
-          dim(`  files     ${state.files.length}`),
-          plain("\n"),
-          dim(`  llm       ${state.metrics.llmCalls} calls`),
-        ])
-        return true
-      }
-      case "new":
-      case "clear":
-        opts.runtime.reset()
-        print([plain("Session reset.")])
-        return true
-      case "ui":
-        if (argument === "panes" || argument === "pane") {
-          result = "switch"
-          opts.settings.config.ui = "panes"
-          opts.settings.persist()
-          renderer.destroy()
-          return true
-        }
-        print([dim("Usage: /ui panes")])
-        return true
-      case "quit":
-      case "exit":
-        result = "quit"
-        renderer.destroy()
-        return true
-      default:
-        print([fg(theme.red)(`Unknown command /${command}. Try /help.`)])
-        return true
-    }
+  const commandContext: CommandContext = {
+    runtime: opts.runtime,
+    settings: opts.settings,
+    print: (text) => print([plain(text)]),
+    switchUi: (mode) => {
+      result = "switch"
+      opts.settings.config.ui = mode
+      opts.settings.persist()
+      renderer.destroy()
+    },
+    quit: () => {
+      result = "quit"
+      renderer.destroy()
+    },
   }
 
   // ---- submitting ---------------------------------------------------------
@@ -401,7 +292,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     if (trimmed.startsWith("/")) {
       history.push(trimmed)
       historyIndex = history.length
-      handleCommand(trimmed)
+      runCommand(trimmed, commandContext)
       return
     }
 
@@ -524,22 +415,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   if (opts.initialTask) void submit(opts.initialTask)
 
   return done
-}
-
-function actionParts(entry: ConversationEntry, width: number): StyledText {
-  const tool = entry.tool ?? /^([a-z_]+)\(/.exec(entry.text)?.[1] ?? "tool"
-  const detail = entry.tool ? entry.text : entry.text.replace(/^[a-z_]+\(/, "").replace(/\)$/, "")
-  const prefix = "  → "
-  const hanging = prefix.length + tool.length + 2
-  const lines = wrapRaw(detail, Math.max(8, width - hanging))
-  const parts: Part[] = [
-    concat([fg(theme.blue)(prefix), bold(fg(theme.blue)(tool)), plain("  "), dim(lines[0] ?? "")]),
-  ]
-  for (const line of lines.slice(1)) {
-    parts.push(plain(`\n${" ".repeat(hanging)}`))
-    parts.push(dim(line))
-  }
-  return concat(parts)
 }
 
 function tail(text: string, length: number): string {

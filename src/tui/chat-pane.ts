@@ -15,6 +15,8 @@ import {
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarOptions } from "./theme.ts"
 import { block, clampLines, concat, fit, header, paneInner, paneRule, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { renderMarkdown } from "./markdown.ts"
+import { renderToolCall } from "./action.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -146,9 +148,9 @@ export class ChatPane {
   private renderEntry(entry: ConversationEntry, width: number): StyledText {
     switch (entry.role) {
       case "user":
-        return concat([this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))])
+        return concat([this.bar(fg(theme.green), "You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "agent":
-        return concat([this.bar(fg(theme.cyan), "Agent"), plain("\n"), plain(block(entry.text, width, 2))])
+        return concat([this.bar(fg(theme.cyan), "Agent"), plain("\n"), renderMarkdown(entry.text, width, 2)])
       case "thinking":
         return concat([
           this.bar(fg(theme.magenta), "Thinking"),
@@ -156,30 +158,14 @@ export class ChatPane {
           italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
         ])
       case "action":
-        return this.renderAction(entry, width)
+        return renderToolCall(entry, width)
       case "observation":
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
+      case "note":
+        return concat([fg(theme.yellow)("⏹ "), dim(block(entry.text, width - 2, 0))])
       case "protocol":
         return concat([fg(theme.red)(block(entry.text, width, 2, "✗"))])
-      case "note":
-        return concat([fg(theme.yellow)("⏹ "), dim(entry.text)])
     }
-  }
-
-  /** Tool calls are the agent's actions: render them prominently, args subordinate. */
-  private renderAction(entry: ConversationEntry, width: number): StyledText {
-    const tool = entry.tool ?? /^([a-z_]+)\(/.exec(entry.text)?.[1] ?? "tool"
-    const detail = entry.tool ? entry.text : entry.text.replace(/^[a-z_]+\(/, "").replace(/\)$/, "")
-    const prefix = "  → "
-    const hanging = prefix.length + tool.length + 2
-    const lines = wrapRaw(detail, Math.max(8, width - hanging))
-    const parts: Part[] = [
-      concat([fg(theme.blue)(prefix), bold(fg(theme.blue)(tool)), plain("  "), dim(lines[0] ?? "")]),
-    ]
-    for (const line of lines.slice(1)) {
-      parts.push(plain(`\n${" ".repeat(hanging)}`), dim(line))
-    }
-    return concat(parts)
   }
 
   private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): StyledText {

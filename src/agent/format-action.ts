@@ -1,6 +1,6 @@
 /**
  * Human-readable descriptions of tool calls, so transcripts and prompts show
- * "edit src/a.ts · 2 edits" instead of raw JSON.
+ * "edit src/a.ts" with a diff instead of raw JSON.
  */
 
 function text(value: unknown): string | undefined {
@@ -15,6 +15,19 @@ function asRecord(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" ? (input as Record<string, unknown>) : {}
 }
 
+type EditOperation = { oldText?: unknown; newText?: unknown }
+
+function diffText(path: string, edits: EditOperation[]): string {
+  const lines = [edits.length > 1 ? `${path}  ·  ${edits.length} edits` : path]
+  for (const edit of edits) {
+    const oldText = text(edit.oldText) ?? ""
+    const newText = text(edit.newText) ?? ""
+    if (oldText) for (const line of oldText.split("\n")) lines.push(`- ${line}`)
+    if (newText) for (const line of newText.split("\n")) lines.push(`+ ${line}`)
+  }
+  return lines.join("\n")
+}
+
 export function describeToolCall(tool: string, input: unknown): string {
   const args = asRecord(input)
   switch (tool) {
@@ -24,8 +37,8 @@ export function describeToolCall(tool: string, input: unknown): string {
       return text(args.path) ?? "file"
     case "edit": {
       const path = text(args.path) ?? "file"
-      const edits = Array.isArray(args.edits) ? args.edits.length : 0
-      return `${path}${edits > 0 ? `  ·  ${edits} edit${edits === 1 ? "" : "s"}` : ""}`
+      const edits = Array.isArray(args.edits) ? (args.edits as EditOperation[]) : []
+      return diffText(path, edits)
     }
     case "push":
       return firstLine(text(args.why) ?? "new task frame")
