@@ -116,15 +116,20 @@ FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
  EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
 ```
 
-The dashboard is one unified panel: the top task frame (`TASK`/`SCOPE`/`DONE`, plus
-`PARENT` when nested) with the file working set listed underneath; the prompt and the
-status bar sit below it (status last). Agent messages carry no role marker — the agent
+Above the dashboard sits a two-row **history stripe**: one cell per *resolved* frame
+(title + outcome). The open stack is the dashboard's job, so nothing is shown twice.
+
+The dashboard is one unified panel: the top task frame (`TASK` = its title, then
+`WHY`/`SCOPE`/`DONE`/`TODO`, plus `STACK` when nested) with the file working set
+listed underneath; the prompt and the status bar sit below it (status last). Agent messages carry no role marker — the agent
 is the default voice, and the user's green bar + tint is what marks your turns.
 
 The status bar leads with a compact **state chip** — `READY` (idle at the prompt),
 `PLAN` (framing), `RUN` (executing), `THINK` (streaming reasoning), `WRITE` (streaming
-answer), `TOOL <name> <elapsed>` (running a tool), `WAIT` (needs you) — and it shows elapsed
-seconds while a phase runs. Each coloured chip uses an **explicit contrasting fg/bg
+answer), `TOOL <name> <elapsed>` (running a tool), `WAIT ·choice|·reply` (needs you) — and it
+shows elapsed seconds / tokens-per-second while a phase runs. The status meta is
+deliberately small (model · llm · tools): depth, files and todo progress live in the
+dashboard, so no fact appears in two places. Each coloured chip uses an **explicit contrasting fg/bg
 pair** (dark text on bright bars, bright-white text on dark bars) so it reads well on
 any theme; `READY`/`IDLE` invert the terminal's own fg/bg. Long command output streams
 live under the prompt while `bash` runs. Values **wrap**

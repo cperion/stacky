@@ -53,22 +53,12 @@ function derivePhase(state: AgentState, now: number): Chip {
   }
 
   if (state.running) {
-    const chip: Chip = state.mode === "push" ? { label: "PLAN", ...theme.chip.green } : { label: "RUN", ...theme.chip.green }
-    appendTodoProgress(chip, state)
-    return chip
+    return state.mode === "push"
+      ? { label: "PLAN", ...theme.chip.green }
+      : { label: "RUN", ...theme.chip.green }
   }
 
-  const chip: Chip = state.mode === "push" ? { label: "READY" } : { label: "IDLE" }
-  appendTodoProgress(chip, state)
-  return chip
-}
-
-/** Append `done/total` for the top frame's checklist, when it has one. */
-function appendTodoProgress(chip: Chip, state: AgentState): void {
-  const frame = state.stack[state.stack.length - 1]
-  if (!frame || frame.todos.length === 0) return
-  const done = frame.todos.filter((todo) => todo.status !== "pending").length
-  chip.label += ` ${done}/${frame.todos.length}`
+  return state.mode === "push" ? { label: "READY" } : { label: "IDLE" }
 }
 
 function appendElapsed(chip: Chip, since: number | undefined, now: number): void {

@@ -363,7 +363,7 @@ function buildFooter(
 
   const busy = state.streaming?.active === true
   const m = state.metrics
-  const meta = `${opts.label}${opts.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length}`
+  const meta = `${opts.label}${opts.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
   const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
 
   return concat([

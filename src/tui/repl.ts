@@ -200,7 +200,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   const updateFooter = (state: AgentState): void => {
     const m = state.metrics
-    const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length} · files ${state.files.length}`
+    const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
     status.content = concat([
       renderChip(statusChip(state)),
       plain("  "),
@@ -475,8 +475,8 @@ function buildDashboard(state: AgentState, width: number, showFiles: boolean, bu
       const glyph = todo.status === "done" ? "✓" : todo.status === "abandoned" ? "✗" : "·"
       field(index === 0 ? "TODO" : "", `${glyph} ${todo.text}${todo.note ? ` — ${todo.note}` : ""}`)
     }
-    const parent = state.stack[state.stack.length - 2]
-    if (parent) field("PARENT", parent.title)
+    const parents = state.stack.slice(0, -1)
+    if (parents.length > 0) field("STACK", parents.map((frame) => frame.title).join(" › "))
   } else {
     field("TASK", "no active frame")
   }
