@@ -4,6 +4,7 @@ import {
   dim,
   fg,
   InputRenderable,
+  italic,
   ScrollBoxRenderable,
   t,
   TextRenderable,
@@ -11,7 +12,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { clampLines, concat, plain, type Part } from "./render.ts"
+import { block, clampLines, concat, header, innerWidth, plain, rule, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -23,15 +24,15 @@ export class ChatPane {
   private scroll: ScrollBoxRenderable
   private text: TextRenderable
 
-  constructor(renderer: CliRenderer, opts: ChatPaneOptions) {
+  constructor(
+    private renderer: CliRenderer,
+    opts: ChatPaneOptions,
+  ) {
     this.box = new BoxRenderable(renderer, {
       flexGrow: 1,
-      height: "100%",
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.fg,
-      title: " CHAT ",
-      titleColor: theme.fg,
+      borderColor: theme.blue,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -49,13 +50,13 @@ export class ChatPane {
     this.scroll.add(this.text)
 
     this.input = new InputRenderable(renderer, {
-      placeholder: "Type a message and press Enter…",
+      placeholder: "Message the agent…",
       backgroundColor: theme.bg,
       focusedBackgroundColor: theme.bg,
       textColor: theme.fg,
       focusedTextColor: theme.fg,
       placeholderColor: theme.gray,
-      cursorColor: theme.fg,
+      cursorColor: theme.blue,
     })
     // InputRenderable.submit() overrides Textarea.submit() and does NOT call
     // onSubmit — it emits an "enter" event with the submitted value instead.
@@ -73,91 +74,103 @@ export class ChatPane {
   }
 
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
-    const parts: Part[] = []
+    const width = innerWidth(this.box, this.renderer, 0.5)
+    const parts: Part[] = [header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), rule(width), plain("\n")]
 
     if (state.conversation.length === 0) {
-      parts.push(dim("No conversation yet. Describe a task below to begin."))
+      parts.push(plain("\n"), dim("No conversation yet. Describe a task below to begin."))
     }
 
     for (const entry of state.conversation) {
       if (entry.role === "thinking" && !showThinking) continue
-      if (parts.length > 0) parts.push(plain("\n\n"))
-      parts.push(...this.renderEntry(entry))
+      parts.push(plain("\n\n"))
+      parts.push(...this.renderEntry(entry, width))
     }
 
     const streaming = state.streaming
     if (streaming?.active) {
-      if (parts.length > 0) parts.push(plain("\n\n"))
-      parts.push(...this.renderStreaming(streaming, showThinking))
+      parts.push(plain("\n\n"))
+      parts.push(...this.renderStreaming(streaming, showThinking, width))
     }
 
     const pending = state.userRequest
     if (pending && state.mode === "waiting_for_user") {
       parts.push(plain("\n\n"))
-      parts.push(...this.renderChoices(pending, selectedChoice))
+      parts.push(...this.renderChoices(pending, selectedChoice, width))
     }
 
     this.text.content = concat(parts)
   }
 
-  private renderEntry(entry: ConversationEntry): Part[] {
+  private bar(color: ReturnType<typeof fg>, label: string): Part {
+    return t`${color("▌")} ${bold(label)}`
+  }
+
+  private renderEntry(entry: ConversationEntry, width: number): Part[] {
     switch (entry.role) {
       case "user":
-        return [t`${bold(fg(theme.green)("You"))}`, plain("\n"), plain(entry.text)]
+        return [this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))]
       case "agent":
-        return [t`${bold(fg(theme.cyan)("Agent"))}`, plain("\n"), plain(entry.text)]
+        return [this.bar(fg(theme.cyan), "Agent"), plain("\n"), plain(block(entry.text, width, 2))]
       case "thinking":
-        return [t`${fg(theme.magenta)("✻ Thinking")}`, plain("\n"), dim(clampLines(entry.text, 40))]
+        return [
+          this.bar(fg(theme.magenta), "Thinking"),
+          plain("\n"),
+          italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
+        ]
       case "action":
-        return [dim(`→ ${entry.text}`)]
+        return [dim(block(entry.text, width, 2, "→"))]
       case "observation":
-        return [plain(clampLines(entry.text, 16))]
+        return [dim(block(clampLines(entry.text, 16), width, 2, "│"))]
       case "protocol":
-        return [fg(theme.red)(entry.text)]
+        return [fg(theme.red)(block(entry.text, width, 2, "✗"))]
     }
   }
 
-  private renderStreaming(streaming: StreamingState, showThinking: boolean): Part[] {
+  private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): Part[] {
     const parts: Part[] = []
     if (streaming.reasoning && showThinking) {
-      parts.push(t`${fg(theme.magenta)("✻ Thinking")} ${dim("…")}`)
+      parts.push(this.bar(fg(theme.magenta), "Thinking"))
       parts.push(plain("\n"))
-      parts.push(dim(clampLines(streaming.reasoning, 40)))
+      parts.push(italic(dim(block(streaming.reasoning, width, 2, "│"))))
       parts.push(plain("\n"))
     }
     if (streaming.text) {
-      parts.push(plain(streaming.text))
+      if (parts.length > 0) parts.push(plain("\n"))
+      parts.push(this.bar(fg(theme.cyan), "Agent"))
+      parts.push(plain("\n"))
+      parts.push(plain(block(streaming.text, width, 2)))
       parts.push(plain("\n"))
     }
     if (streaming.tool) {
-      parts.push(dim(`→ calling ${streaming.tool}…`))
+      parts.push(dim(`  → calling ${streaming.tool}…`))
     } else if (!streaming.reasoning && !streaming.text) {
-      parts.push(dim("…"))
+      parts.push(dim("  …"))
     }
     return parts
   }
 
-  private renderChoices(request: UserRequestRecord, selected: number): Part[] {
-    const parts: Part[] = [t`${bold(fg(theme.yellow)("Choose an option"))}`]
+  private renderChoices(request: UserRequestRecord, selected: number, width: number): Part[] {
+    const parts: Part[] = [rule(width), plain("\n"), bold("Needs your input"), plain("\n\n")]
     const choices = request.choices ?? []
     choices.forEach((choice, index) => {
       const isSelected = index === selected
       const isPreferred = request.preferredChoice?.id === choice.id
-      parts.push(plain("\n"))
-      const marker = isSelected ? "❯" : " "
-      const label = `${marker} ${index + 1}. ${choice.label}${isPreferred ? "  (recommended)" : ""}`
+      const marker = isSelected ? fg(theme.blue)("❯") : plain(" ")
+      const label = `${index + 1}. ${choice.label}`
+      parts.push(marker, plain(" "))
       parts.push(isSelected ? bold(label) : plain(label))
+      if (isPreferred) parts.push(plain("  "), fg(theme.green)("recommended"))
       if (choice.description) {
-        parts.push(plain("\n"))
-        parts.push(dim(`     ${choice.description}`))
+        parts.push(plain("\n     "), dim(choice.description))
       }
+      parts.push(plain("\n"))
     })
     if (request.preferredChoice) {
-      parts.push(plain("\n"))
-      parts.push(dim(`Recommended: ${request.preferredChoice.id} — ${request.preferredChoice.reason}`))
+      parts.push(plain("\n"), dim(`recommended · ${request.preferredChoice.reason}`), plain("\n"))
     }
-    parts.push(plain("\n"))
-    parts.push(dim("↑/↓ to move · Enter to choose · or type a freeform reply"))
+    parts.push(plain("\n"), dim("j/k move · l/Enter select · or type a reply"))
     return parts
   }
 }
+

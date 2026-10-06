@@ -67,6 +67,22 @@ The TUI is vim-flavoured: `hjkl` drives every list and menu. While the chat
 input has text, `j`/`k` are ordinary characters, so freeform replies still work;
 the vim motions engage for the choice list only when the input is empty.
 
+### Visual language
+
+Contrast comes from **hierarchy**, not from hardcoded colours:
+
+- Panes use dim (`ANSI 8`) borders and in-content headers with full-width rules;
+  the chat border turns blue while working and yellow when it needs you.
+- Roles are marked with a coloured left bar `▌` (green You, cyan Agent, magenta
+  Thinking); tool calls and output are dimmed behind a `│` gutter, so the
+  conversation stands out from the noise.
+- Long text is hard-wrapped with the same indent on every line, so nothing turns
+  ragged.
+- The footer is a single line: a reverse-video mode chip, dim metadata, and a
+  plain status hint — the only inverted element on screen.
+- Semantic colours are ANSI palette indices (red/green/yellow/blue/magenta/cyan),
+  so they follow the terminal's own theme.
+
 ## Streaming & thinking
 
 The model is called with `streamText`, so the UI updates as the model works:

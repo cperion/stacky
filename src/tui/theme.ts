@@ -22,8 +22,11 @@ export const theme = {
   red: RGBA.fromIndex(1),
   green: RGBA.fromIndex(2),
   yellow: RGBA.fromIndex(3),
+  blue: RGBA.fromIndex(4),
   magenta: RGBA.fromIndex(5),
   cyan: RGBA.fromIndex(6),
+  /** Bright black: AA muted tone for structure (borders, rules, secondary text). */
+  dim: RGBA.fromIndex(8),
   gray: RGBA.fromIndex(8),
 } as const
 

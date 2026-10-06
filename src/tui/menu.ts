@@ -4,12 +4,11 @@ import {
   dim,
   fg,
   ScrollBoxRenderable,
-  t,
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, plain, type Dimension, type Part } from "./render.ts"
+import { concat, header, plain, rule, sectionRule, fractionWidth, type Dimension, type Part } from "./render.ts"
 
 export type MenuItem =
   | { kind: "separator"; label?: string }
@@ -44,18 +43,20 @@ export class MenuOverlay {
   private stack: Level[] = []
   private index = 0
 
-  constructor(renderer: CliRenderer, opts: { width: Dimension }) {
+  constructor(
+    private renderer: CliRenderer,
+    opts: { width: Dimension },
+  ) {
     this.box = new BoxRenderable(renderer, {
       position: "absolute",
       left: "20%",
-      top: "12%",
+      top: "14%",
       width: opts.width,
-      height: "74%",
+      height: "70%",
       zIndex: 200,
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.fg,
-      titleColor: theme.fg,
+      borderColor: theme.blue,
       backgroundColor: theme.bg,
       flexDirection: "column",
       paddingLeft: 2,
@@ -164,25 +165,32 @@ export class MenuOverlay {
     const level = this.current()
     if (!level) return
 
-    const parts: Part[] = [t`${bold(level.title)}`, plain("\n\n")]
+    const width = fractionWidth(this.renderer, 0.62, 6)
+    const parts: Part[] = [
+      header(level.title, this.stack.length > 1 ? "‹ back" : "", width),
+      plain("\n"),
+      rule(width),
+      plain("\n"),
+    ]
 
     level.items.forEach((item, i) => {
       if (i > 0) parts.push(plain("\n"))
       if (item.kind === "separator") {
-        parts.push(t`${dim(`── ${item.label ?? ""}`.padEnd(LABEL_WIDTH + 6, "─"))}`)
+        parts.push(plain("\n"))
+        parts.push(sectionRule(item.label ?? "", width))
         return
       }
 
       const selected = i === this.index
-      const marker = selected ? "❯ " : "  "
+      const marker = selected ? fg(theme.blue)("❯") : plain(" ")
       const label = item.label.padEnd(LABEL_WIDTH)
-      const line = `${marker}${label}`
-      parts.push(selected ? bold(line) : plain(line))
+      parts.push(marker, plain(" "))
+      parts.push(selected ? bold(label) : plain(label))
       parts.push(valuePart(item))
     })
 
     parts.push(plain("\n\n"))
-    parts.push(dim("j/k move · l/Enter select/cycle · h back · g/G top/bottom · Esc close"))
+    parts.push(dim("j/k move · l/Enter select · h back · g/G top/bottom · Esc close"))
 
     this.text.content = concat(parts)
     this.scroll.scrollTop = Math.max(0, (this.index - 4) * 1)
@@ -193,8 +201,7 @@ function valuePart(item: Exclude<MenuItem, { kind: "separator" }>): Part {
   switch (item.kind) {
     case "toggle": {
       const on = item.value()
-      const text = on ? "on" : "off"
-      return on ? fg(theme.green)(text) : dim(text)
+      return on ? concat([fg(theme.green)("● "), plain("on")]) : concat([dim("○ "), dim("off")])
     }
     case "choice":
       return fg(theme.cyan)(item.value())

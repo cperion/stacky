@@ -10,22 +10,22 @@ import {
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, plain, type Dimension, type Part } from "./render.ts"
+import { concat, block, header, headerWith, innerWidth, plain, rule, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
   readonly box: BoxRenderable
   private scroll: ScrollBoxRenderable
   private text: TextRenderable
 
-  constructor(renderer: CliRenderer, opts: { width: Dimension }) {
+  constructor(
+    private renderer: CliRenderer,
+    opts: { width: Dimension },
+  ) {
     this.box = new BoxRenderable(renderer, {
       width: opts.width,
-      height: "100%",
       border: true,
       borderStyle: "rounded",
-      borderColor: theme.fg,
-      title: " TASK STACK ",
-      titleColor: theme.fg,
+      borderColor: theme.dim,
       flexDirection: "column",
       paddingLeft: 1,
       paddingRight: 1,
@@ -34,83 +34,83 @@ export class TaskPane {
       flexGrow: 1,
       scrollY: true,
       scrollX: false,
-      stickyScroll: false,
       scrollbarOptions: scrollbarTheme,
     })
-    this.text = new TextRenderable(renderer, {
-      content: "",
-      fg: theme.fg,
-      wrapMode: "word",
-    })
+    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "word" })
     this.scroll.add(this.text)
     this.box.add(this.scroll)
   }
 
   update(state: AgentState, showHistory: boolean): void {
+    const width = innerWidth(this.box, this.renderer, 0.26)
     const top = state.stack[state.stack.length - 1]
     const parents = state.stack.slice(0, -1)
 
     const parts: Part[] = []
+    const waiting = state.mode === "waiting_for_user"
 
-    if (state.mode === "waiting_for_user") {
-      parts.push(t`${bold(fg(theme.yellow)("⏸  WAITING FOR USER"))}`)
-      parts.push(plain("\n"))
+    if (waiting) {
+      parts.push(
+        headerWith("TASK STACK", bold(fg(theme.yellow)("waiting for user")), "waiting for user".length, width),
+      )
+    } else {
+      parts.push(header("TASK STACK", `depth ${state.stack.length} · ${state.mode}`, width))
     }
-
-    parts.push(t`${bold("TASK STACK")} ${dim(`depth ${state.stack.length} · ${state.mode}`)}`)
-    parts.push(plain("\n\n"))
+    parts.push(plain("\n"), rule(width), plain("\n"))
 
     if (!top) {
+      parts.push(plain("\n"))
       parts.push(dim("No active frame."))
       parts.push(plain("\n\n"))
-      parts.push(dim("The next request will be framed with push()."))
+      parts.push(dim("Describe a task below and the agent will push a frame."))
     } else {
-      parts.push(...this.renderTop(top, state.mode === "waiting_for_user"))
-      if (parents.length > 0) parts.push(...this.renderParents(parents))
+      parts.push(plain("\n"))
+      parts.push(...this.renderTop(top, waiting, width))
+      if (parents.length > 0) parts.push(...this.renderParents(parents, width))
     }
 
     if (showHistory && state.closedFrames.length > 0) {
       parts.push(plain("\n\n"))
-      parts.push(...this.renderHistory(state.closedFrames))
+      parts.push(...this.renderHistory(state.closedFrames, width))
     }
 
     this.text.content = concat(parts)
     this.scroll.scrollTop = 0
   }
 
-  private renderTop(frame: TaskFrame, waiting: boolean): Part[] {
-    const color = waiting ? theme.yellow : theme.fg
+  private renderTop(frame: TaskFrame, waiting: boolean, width: number): Part[] {
+    const color = waiting ? theme.yellow : theme.blue
     const parts: Part[] = [
-      t`${bold(fg(color)("▶ TOP FRAME"))} ${dim(frame.id)}`,
-      plain("\n"),
-      t`${bold("Why")} ${frame.why}`,
-      plain("\n"),
-      t`${bold("Scope")} ${frame.scope}`,
-      plain("\n"),
+      t`${fg(color)("▌")} ${bold(fg(color)("TOP FRAME"))}  ${dim(frame.id)}`,
+      plain("\n\n"),
     ]
-    parts.push(t`${bold("Known")} `)
-    parts.push(frame.knownContext ? plain(frame.knownContext) : dim("(none)"))
-    parts.push(plain("\n"))
-    parts.push(t`${bold("Done when")} ${frame.definitionOfDone}`)
+    parts.push(...this.field("Why", frame.why, width))
+    parts.push(...this.field("Scope", frame.scope, width))
+    parts.push(...this.field("Known", frame.knownContext || "—", width))
+    parts.push(...this.field("Done when", frame.definitionOfDone, width))
     return parts
   }
 
-  private renderParents(parents: TaskFrame[]): Part[] {
-    const parts: Part[] = [plain("\n\n"), t`${bold(dim("PARENT FRAMES"))}`]
+  private field(label: string, value: string, width: number): Part[] {
+    return [bold(label), plain("\n"), plain(block(value, width, 2)), plain("\n\n")]
+  }
+
+  private renderParents(parents: TaskFrame[], width: number): Part[] {
+    const parts: Part[] = [plain("\n"), header("PARENTS", `${parents.length}`, width), plain("\n"), rule(width), plain("\n")]
     for (const frame of [...parents].reverse()) {
-      parts.push(plain("\n"))
-      parts.push(t`${dim("▸")} ${frame.why.split("\n")[0] ?? ""}`)
+      parts.push(plain("\n"), t`${dim("·")} ${frame.why.split("\n")[0] ?? ""}`)
     }
     return parts
   }
 
-  private renderHistory(history: ClosedFrame[]): Part[] {
-    const parts: Part[] = [t`${bold(fg(theme.magenta)("FRAME HISTORY"))}`]
-    for (const closed of [...history].reverse().slice(0, 12)) {
+  private renderHistory(history: ClosedFrame[], width: number): Part[] {
+    const parts: Part[] = [header("HISTORY", `${history.length}`, width), plain("\n"), rule(width)]
+    for (const closed of [...history].reverse().slice(0, 15)) {
       parts.push(plain("\n"))
       parts.push(t`${fg(theme.green)("✓")} ${closed.intent.why.split("\n")[0] ?? ""}`)
       parts.push(plain("\n"))
-      parts.push(dim(`   outcome: ${closed.disposition.outcome} — ${closed.disposition.whyClosed}`))
+      parts.push(dim(`  ${closed.disposition.outcome} · ${closed.disposition.whyClosed}`))
+      parts.push(plain("\n"))
     }
     return parts
   }

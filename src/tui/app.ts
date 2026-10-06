@@ -1,4 +1,4 @@
-import { BoxRenderable, createCliRenderer, TextRenderable } from "@opentui/core"
+import { bold, BoxRenderable, createCliRenderer, dim, reverse, TextRenderable } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState } from "../agent/types.ts"
 import { TaskPane } from "./task-pane.ts"
@@ -7,6 +7,7 @@ import { FilePane } from "./file-pane.ts"
 import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { theme } from "./theme.ts"
+import { concat, plain } from "./render.ts"
 import type { SettingsController } from "./settings.ts"
 
 export type AppOptions = {
@@ -36,13 +37,26 @@ export async function runApp(opts: AppOptions): Promise<void> {
   })
 
   const outer = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column" })
-  const main = new BoxRenderable(renderer, { width: "100%", flexGrow: 1, flexDirection: "row", gap: 1 })
+  const main = new BoxRenderable(renderer, {
+    width: "100%",
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0,
+    flexDirection: "row",
+    gap: 1,
+  })
 
   const taskPane = new TaskPane(renderer, { width: "26%" })
   let selectedChoice = 0
   const chatPane = new ChatPane(renderer, { onSubmit: (text) => handleSubmit(text) })
   const filePane = new FilePane(renderer, { width: "26%" })
-  const footer = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "none" })
+  const footer = new TextRenderable(renderer, {
+    content: "",
+    fg: theme.fg,
+    bg: theme.bg,
+    wrapMode: "none",
+    height: 1,
+  })
   const menu = new MenuOverlay(renderer, { width: "62%" })
 
   main.add(taskPane.box)
@@ -63,13 +77,20 @@ export async function runApp(opts: AppOptions): Promise<void> {
     taskPane.update(state, showHistory)
     chatPane.update(state, selectedChoice, opts.settings.config.showThinking)
     filePane.update(state, opts.settings.config.fileBudgetTokens)
-    footer.content = renderFooter(state, {
+
+    // The border reflects what the agent needs from you.
+    const busy = state.streaming?.active === true
+    chatPane.box.borderColor =
+      state.mode === "waiting_for_user" ? theme.yellow : busy ? theme.blue : theme.dim
+
+    const line = buildFooter(state, {
       label: opts.runtime.llmLabel,
       thinking: opts.settings.config.thinking,
       showHistory,
       notice: opts.notice,
       spinner: SPINNER[spin % SPINNER.length] ?? "…",
     })
+    footer.content = line
   }
 
   let renderPending = false
@@ -266,6 +287,8 @@ export async function runApp(opts: AppOptions): Promise<void> {
     requestRender()
   })
 
+  renderer.on("resize", () => requestRender())
+
   render()
   chatPane.focus()
 
@@ -276,7 +299,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
   await done
 }
 
-function renderFooter(
+function buildFooter(
   state: AgentState,
   opts: {
     label: string
@@ -285,16 +308,23 @@ function renderFooter(
     notice: string | undefined
     spinner: string
   },
-): string {
-  if (opts.notice && state.conversation.length === 0) return ` ${opts.notice}`
+): ReturnType<typeof concat> {
+  if (opts.notice && state.conversation.length === 0) return concat([dim(` ${opts.notice}`)])
 
   const busy = state.streaming?.active === true
-  const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
-  const thinkingFlag = opts.thinking ? " · thinking" : ""
+  const mode = state.mode === "waiting_for_user" ? "WAITING" : state.mode.toUpperCase()
   const m = state.metrics
-  const stats = `llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length}`
-  const history = opts.showHistory ? " · history" : ""
-  return ` ${state.mode.toUpperCase()} · ${opts.label}${thinkingFlag} · ${stats} · ${status}${history}`
+  const meta = `${opts.label}${opts.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length}`
+  const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
+
+  return concat([
+    reverse(bold(` ${mode} `)),
+    plain("  "),
+    dim(meta),
+    plain("   "),
+    plain(status),
+    opts.showHistory ? dim("  · history") : plain(""),
+  ])
 }
 
 function statusHint(state: AgentState): string {
