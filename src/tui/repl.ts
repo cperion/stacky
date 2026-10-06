@@ -245,7 +245,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     }
     const streaming = state.streaming
     if (streaming?.active) return streamingLine(streaming, rendererWidth())
-    if (state.mode === "execute") return concat([dim("working…")])
     return plain("")
   }
 
