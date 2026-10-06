@@ -16,6 +16,7 @@ import { EventBus, type RuntimeEvent } from "./events.ts"
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
 import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } from "../llm/client.ts"
 import { createMetrics } from "./metrics.ts"
+import { describeToolCall } from "./format-action.ts"
 import { runBash } from "../tools/bash.ts"
 import { runRead } from "../tools/read.ts"
 import { runEdit } from "../tools/edit.ts"
@@ -400,9 +401,10 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "bash", ok: result.ok })
 
     const value = result.value
+    const output = (value?.output ?? "").replace(/\s+$/, "")
     const observation = result.ok
-      ? `$ ${command}\n(exit ${value?.exitCode ?? 0})\n${value?.output ?? ""}`
-      : `$ ${command}\nFAILED: ${result.error ?? "unknown error"}${value ? `\n(exit ${value.exitCode})\n${value.output}` : ""}`
+      ? output || "(no output)"
+      : `command failed${value ? ` (exit ${value.exitCode})` : ""}: ${result.error ?? "unknown error"}${output ? `\n${output}` : ""}`
 
     this.record("bash", { command }, observation)
     return true
@@ -425,11 +427,11 @@ export class AgentRuntime {
     for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
 
     const lines = result.value.content.split("\n").length
-    const note = result.value.truncated ? " (truncated)" : ""
+    const note = result.value.truncated ? " · truncated" : ""
     this.record(
       "read",
       { path },
-      `read ${path}: ${lines} lines, ~${entry.tokenCount} tokens${note}. Current contents are now in CURRENT FILE WORKING SET.`,
+      `${path} · ${lines} lines · ~${entry.tokenCount} tokens${note} · now in the working set`,
     )
     return true
   }
@@ -450,11 +452,11 @@ export class AgentRuntime {
     this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
     for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
 
-    const verb = result.value.created ? "created" : "edited"
+    const verb = result.value.created ? "created" : "updated"
     this.record(
       "edit",
       { path, edits: edits.length },
-      `${verb} ${path}: ${result.value.replacements} replacement(s), now ~${entry.tokenCount} tokens. Updated contents are in CURRENT FILE WORKING SET.`,
+      `${verb} ${path} · ${result.value.replacements} replacement${result.value.replacements === 1 ? "" : "s"} · ~${entry.tokenCount} tokens · now in the working set`,
     )
     return true
   }
@@ -465,7 +467,7 @@ export class AgentRuntime {
     this.metrics.pushes += 1
     this.metrics.maxStackDepth = Math.max(this.metrics.maxStackDepth, this.stack.depth)
     this.bus.emit({ type: "frame.pushed", frame })
-    this.record("push", { why: action.why }, `Pushed frame ${frame.id}. It is now TOP of stack.`)
+    this.record("push", { why: action.why, scope: action.scope }, `top of stack · depth ${this.stack.depth}`)
     return true
   }
 
@@ -483,8 +485,8 @@ export class AgentRuntime {
     this.bus.emit({ type: "frame.popped", frame: closed })
     this.record(
       "pop",
-      { outcome: action.outcome },
-      `Popped frame ${closed.intent.id} (outcome: ${closed.disposition.outcome}). Stack depth is now ${this.stack.depth}.`,
+      { outcome: action.outcome, whyClosed: action.whyClosed },
+      `closed · ${closed.disposition.outcome} · depth ${this.stack.depth}`,
     )
     return true
   }
@@ -520,8 +522,7 @@ export class AgentRuntime {
   // ---------------------------------------------------------------------------
 
   private record(tool: string, input: unknown, observation: string): void {
-    const compact = compactJson(input)
-    this.conversation.add("action", `${tool}(${compact})`)
+    this.conversation.add("action", describeToolCall(tool, input), { tool })
     this.conversation.add("observation", observation)
     this.observation = observation
     this.emitState()
@@ -545,17 +546,6 @@ export class AgentRuntime {
   private emitState(): void {
     this.bus.emit({ type: "state.changed" })
   }
-}
-
-function compactJson(value: unknown, maxLength = 300): string {
-  let text: string
-  try {
-    text = JSON.stringify(value)
-  } catch {
-    text = String(value)
-  }
-  if (text && text.length > maxLength) return `${text.slice(0, maxLength)}…`
-  return text ?? ""
 }
 
 export function formatUserMessage(request: UserRequestRecord): string {

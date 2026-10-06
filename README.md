@@ -126,25 +126,24 @@ In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the 
 
 Switch with `--ui panes|repl` on the command line as well.
 
-### Shading and theme modes
+### Shading (user input + tool output only)
 
-One tint is shared by **user input** and **tool output**, and it is **derived from
-your terminal's own background** rather than hardcoded. In `auto` mode the renderer
-asks the terminal for its default background (OSC 11) and lifts it slightly — e.g.
-`#1a1b26` → `#30313c` — so the band is subtle and matches your colour scheme.
-Agent messages and thinking keep the default background.
+The interface itself stays **terminal-native** — panes, chat text, footer and input all
+use the terminal's own default background. The tint is applied **only** to `▌ You`
+messages and tool-output blocks.
+
+That one tint is derived from your terminal's actual background (OSC 11) rather than
+hardcoded: dark backgrounds get a slight lift, light backgrounds a slight drop — e.g.
+`#1a1b26` → `#30313c`. Agent messages, thinking and all chrome keep the terminal's
+background.
 
 ```
 --theme auto | dark | light     (config key: theme)
 ```
 
-- `auto` — follow the terminal's reported dark/light mode, and derive the tint
-  from its background.
-- `dark` — force the dark palette (terminal background + default foreground).
-- `light` — force **black on white**: white surface, black text, light-grey tint.
-
-Change it via `--theme`, `Ctrl+P` → **Theme** (panes), or `/theme` (REPL); it is
-saved to the config file. Accents stay ANSI palette indices in both modes.
+`auto` follows the terminal's reported dark/light mode and derives the tint from its
+background; `dark`/`light` force the direction. Change it with `--theme`,
+`Ctrl+P` → **Theme** (panes) or `/theme` (REPL). Accents stay ANSI palette indices.
 
 ## Streaming & thinking
 

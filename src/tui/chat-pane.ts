@@ -156,7 +156,7 @@ export class ChatPane {
           italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
         ])
       case "action":
-        return this.renderAction(entry.text, width)
+        return this.renderAction(entry, width)
       case "observation":
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
@@ -165,20 +165,17 @@ export class ChatPane {
   }
 
   /** Tool calls are the agent's actions: render them prominently, args subordinate. */
-  private renderAction(text: string, width: number): StyledText {
-    const paren = text.indexOf("(")
-    const tool = paren >= 0 ? text.slice(0, paren) : text
-    const args = paren >= 0 ? text.slice(paren) : ""
+  private renderAction(entry: ConversationEntry, width: number): StyledText {
+    const tool = entry.tool ?? /^([a-z_]+)\(/.exec(entry.text)?.[1] ?? "tool"
+    const detail = entry.tool ? entry.text : entry.text.replace(/^[a-z_]+\(/, "").replace(/\)$/, "")
     const prefix = "  → "
     const hanging = prefix.length + tool.length + 2
-    const argLines = wrapRaw(args, Math.max(8, width - hanging))
-
+    const lines = wrapRaw(detail, Math.max(8, width - hanging))
     const parts: Part[] = [
-      concat([fg(theme.blue)(prefix), bold(fg(theme.blue)(tool)), plain("  "), dim(argLines[0] ?? "")]),
+      concat([fg(theme.blue)(prefix), bold(fg(theme.blue)(tool)), plain("  "), dim(lines[0] ?? "")]),
     ]
-    for (const line of argLines.slice(1)) {
-      parts.push(plain(`\n${" ".repeat(hanging)}`))
-      parts.push(dim(line))
+    for (const line of lines.slice(1)) {
+      parts.push(plain(`\n${" ".repeat(hanging)}`), dim(line))
     }
     return concat(parts)
   }

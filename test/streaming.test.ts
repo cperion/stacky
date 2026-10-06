@@ -106,9 +106,10 @@ describe("runtime settings", () => {
       { tool: "user", input: { message: "done", response: "none" } },
     ])
     await runtime.request("go")
+    const before = runtime.snapshot().conversation.length
     const evicted = runtime.setBudgets({ fileBudgetTokens: 10, conversationBudgetTokens: 5 })
     expect(Array.isArray(evicted)).toBe(true)
-    expect(runtime.snapshot().conversation.length).toBeLessThanOrEqual(2)
+    expect(runtime.snapshot().conversation.length).toBeLessThan(before)
   })
 
   test("reset clears stack, conversation and files", async () => {

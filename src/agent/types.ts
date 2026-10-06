@@ -101,6 +101,8 @@ export type ConversationEntry = {
   role: ConversationRole
   text: string
   tokens: number
+  /** Set on "action" entries: the tool that was called, for display. */
+  tool?: string
 }
 
 export type StreamingState = {

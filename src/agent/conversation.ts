@@ -35,13 +35,14 @@ export class ConversationBuffer {
     return total
   }
 
-  add(role: ConversationRole, text: string, now = Date.now()): ConversationEntry {
+  add(role: ConversationRole, text: string, meta?: { tool?: string }, now = Date.now()): ConversationEntry {
     const entry: ConversationEntry = {
       id: randomUUID(),
       at: now,
       role,
       text,
       tokens: estimateTokens(text),
+      ...(meta?.tool ? { tool: meta.tool } : {}),
     }
     this.items.push(entry)
     this.evict()
