@@ -44,7 +44,6 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     width: "100%",
     height: "100%",
     flexDirection: "column",
-    backgroundColor: theme.bg,
   })
   const main = new BoxRenderable(renderer, {
     width: "100%",

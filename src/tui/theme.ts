@@ -4,11 +4,14 @@ import { RGBA, type CliRenderer, type ThemeMode } from "@opentui/core"
 export type ThemeModeSetting = "auto" | "dark" | "light"
 
 export type Theme = {
-  /** Base surface: the terminal background (or white in light mode). */
+  /** Base surface: the terminal's own default background (transparent). */
   bg: RGBA
-  /** Default foreground (or black in light mode). */
+  /** Base foreground: the terminal's own default foreground. */
   fg: RGBA
-  /** ONE shared tint for user input and tool output, derived from `bg`. */
+  /**
+   * The ONE tint used only for user messages and tool output. Derived from the
+   * terminal's reported background so it stays subtle on any colour scheme.
+   */
   shade: RGBA
   red: RGBA
   green: RGBA
@@ -21,9 +24,7 @@ export type Theme = {
 }
 
 const DARK_FALLBACK_BG = "#1a1b26"
-const DARK_FALLBACK_FG = "#e6e6e6"
-const LIGHT_BG = "#ffffff"
-const LIGHT_FG = "#000000"
+const LIGHT_FALLBACK_BG = "#ffffff"
 
 function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "dim" | "gray"> {
   // ANSI palette indices stay themeable in both modes.
@@ -39,65 +40,70 @@ function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" 
   }
 }
 
-/** Shift a colour a little towards the foreground's direction for a subtle tint. */
-function deriveShade(background: RGBA, light: boolean): RGBA {
-  const [r, g, b] = background.toInts()
-  const delta = light ? -14 : 22
-  const clamp = (value: number) => Math.max(0, Math.min(255, Math.round(value + delta)))
-  return RGBA.fromInts(clamp(r), clamp(g), clamp(b))
+function clamp255(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)))
 }
 
-export function buildTheme(mode: ThemeMode, background?: string | null, foreground?: string | null): Theme {
-  const light = mode === "light"
-  const bg = light
-    ? RGBA.fromHex(LIGHT_BG)
-    : background
-      ? RGBA.fromHex(background)
-      : RGBA.fromHex(DARK_FALLBACK_BG)
-  const fg = light
-    ? RGBA.fromHex(LIGHT_FG)
-    : foreground
-      ? RGBA.fromHex(foreground)
-      : RGBA.fromHex(DARK_FALLBACK_FG)
-  return { ...accents(), bg, fg, shade: deriveShade(bg, light) }
+/** Lift (dark) or drop (light) the terminal background to make a subtle tint. */
+function deriveShade(light: boolean, backgroundHex: string | null): RGBA {
+  const base = backgroundHex
+    ? RGBA.fromHex(backgroundHex)
+    : RGBA.fromHex(light ? LIGHT_FALLBACK_BG : DARK_FALLBACK_BG)
+  const [r, g, b] = base.toInts()
+  const delta = light ? -16 : 22
+  return RGBA.fromInts(clamp255(r + delta), clamp255(g + delta), clamp255(b + delta))
+}
+
+/**
+ * The interface itself stays terminal-native (`bg`/`fg` are the terminal's own
+ * defaults); only `shade` is a concrete colour, and it is used solely for the
+ * user-message and tool-output blocks.
+ */
+export function buildTheme(light: boolean, backgroundHex: string | null = null): Theme {
+  return {
+    bg: RGBA.defaultBackground(),
+    fg: RGBA.defaultForeground(),
+    shade: deriveShade(light, backgroundHex),
+    ...accents(),
+  }
 }
 
 /** Mutable module-level theme; importers see the live value. */
-export let theme: Theme = buildTheme("dark")
+export let theme: Theme = buildTheme(false)
 
 /**
- * Resolve the mode: an explicit setting, or whatever the terminal reports.
- * Then (for dark mode) read the terminal's real background so the shared shade
- * is derived from the user's own colour scheme instead of a fixed grey.
+ * Resolve dark/light (from the setting or the terminal) and read the terminal's
+ * real background so the user/tool tint is derived from the user's colour scheme
+ * instead of a fixed grey.
  */
 export async function applyTheme(renderer: CliRenderer, setting: ThemeModeSetting): Promise<ThemeMode> {
-  let mode: ThemeMode
-  if (setting === "dark" || setting === "light") {
-    mode = setting
-  } else if (renderer.themeMode) {
-    mode = renderer.themeMode
+  let light: boolean
+  if (setting === "light") {
+    light = true
+  } else if (setting === "dark") {
+    light = false
   } else {
-    try {
-      mode = (await renderer.waitForThemeMode(150)) ?? "dark"
-    } catch {
-      mode = "dark"
+    let mode = renderer.themeMode
+    if (!mode) {
+      try {
+        mode = await renderer.waitForThemeMode(150)
+      } catch {
+        mode = null
+      }
     }
+    light = mode === "light"
   }
 
-  let background: string | null = null
-  let foreground: string | null = null
-  if (mode === "dark") {
-    try {
-      const palette = await renderer.getPalette({ timeout: 200 })
-      background = palette.defaultBackground ?? null
-      foreground = palette.defaultForeground ?? null
-    } catch {
-      // Terminal did not answer the palette query — fall back to defaults.
-    }
+  let backgroundHex: string | null = null
+  try {
+    const palette = await renderer.getPalette({ timeout: 200 })
+    backgroundHex = palette.defaultBackground ?? null
+  } catch {
+    // Terminal did not answer the palette query — fall back to defaults.
   }
 
-  theme = buildTheme(mode, background, foreground)
-  return mode
+  theme = buildTheme(light, backgroundHex)
+  return light ? "light" : "dark"
 }
 
 /** Terminal-native scrollbar colours, resolved lazily so they track the theme. */
