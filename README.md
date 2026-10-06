@@ -15,7 +15,7 @@ prose.
 
 ```
 ENVIRONMENT          bash(command) · read(path) · edit(path, edits)
-EXECUTION CONTROL    push(taskFrame) · pop(disposition) · spawn(taskFrame)
+EXECUTION CONTROL    push(taskFrame) · pop(disposition) · todo(step) · spawn(taskFrame)
 HUMAN BOUNDARY       user(request)          <- the ONLY user-visible output
 ```
 
@@ -104,10 +104,13 @@ stacky  ·  REPL mode. Type a task, or /help for commands.
 ▌ token.ts · 84 lines · ~900 tokens · now in the working set
   Fixed it. Tests pass.
 
-TASK   Fix the failing token test. The auth test fails only when refresh tokens are expired.
+TASK   Fix token expiry parsing
+WHY    The auth test fails only when refresh tokens are expired.
 SCOPE  Inspect timestamp parsing and normalization only.
 DONE   Determine whether parsing is responsible, with evidence for the parent frame.
-────────────────────────────────────────────────────────────────────────────────────────
+TODO   ✓ Read the token parser
+       ✓ Reproduce the failure
+       · Fix the expiry comparison
 FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
 ❯ _
  EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
@@ -333,6 +336,10 @@ subagent's report as an observation:
 - **Bounded delegation.** `spawn` gives a frame to an isolated subagent (own stack,
   own file LRU, own history). Depth is capped, subagents cannot ask the human, and
   their transcript is excluded from the parent's prompt.
+- **A frame is a checklist.** Every frame carries a short `title` and an ordered
+  `todos` list. `pop` is **refused while any step is still pending** — resolve each
+  with `todo({index, status:"done"})` or `todo({index, status:"abandoned", note})`.
+  This makes the plan concrete and the UI show real progress.
 - **Pop ≠ success.** `pop` records a disposition: `completed`, `disproven`,
   `unnecessary`, `abandoned`, `superseded`, `blocked`, `failed`, `partial`.
 - **User does not change the stack.** `user(response:"required")` suspends and resumes

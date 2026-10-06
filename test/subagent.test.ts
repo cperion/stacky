@@ -20,12 +20,13 @@ describe("subagents", () => {
   test("spawn runs an isolated child and returns its report", async () => {
     const runtime = runtimeWith([
       // parent
-      { tool: "push", input: { why: "root task", scope: "s", knownContext: "", definitionOfDone: "d" } },
-      { tool: "spawn", input: { why: "child sub-task", scope: "investigate a.txt", knownContext: "", definitionOfDone: "report" } },
+      { tool: "push", input: { why: "root task", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
+      { tool: "spawn", input: { why: "child sub-task", scope: "investigate a.txt", knownContext: "", definitionOfDone: "report", todos: ["step one"] } },
       // child (its own stack starts on the spawned frame)
       { tool: "read", input: { path: "a.txt" } },
       { tool: "user", input: { message: "child report: a.txt says hello", response: "none" } },
       // parent resumes
+      { tool: "todo", input: { index: 1, status: "done" } },
       { tool: "pop", input: { outcome: "completed", whatWasDone: "delegated", whyClosed: "done", evidence: "", effectsOnParent: "" } },
       { tool: "user", input: { message: "all done", response: "none" } },
     ])
@@ -46,11 +47,12 @@ describe("subagents", () => {
 
   test("subagents cannot ask the user", async () => {
     const runtime = runtimeWith([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
-      { tool: "spawn", input: { why: "child", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
+      { tool: "spawn", input: { why: "child", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       // child tries to ask the user (invalid) then reports
       { tool: "user", input: { message: "which one?", response: "required" } },
       { tool: "user", input: { message: "child report", response: "none" } },
+      { tool: "todo", input: { index: 1, status: "done" } },
       { tool: "pop", input: { outcome: "completed", whatWasDone: "x", whyClosed: "y", evidence: "", effectsOnParent: "" } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
@@ -63,11 +65,12 @@ describe("subagents", () => {
   test("respects the nesting limit", async () => {
     const runtime = runtimeWith(
       [
-        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
-        { tool: "spawn", input: { why: "level 1", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
+        { tool: "spawn", input: { why: "level 1", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         // child (depth 1) tries to spawn again, which is refused at maxDepth 1
-        { tool: "spawn", input: { why: "level 2", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "spawn", input: { why: "level 2", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         { tool: "user", input: { message: "child report", response: "none" } },
+        { tool: "todo", input: { index: 1, status: "done" } },
         { tool: "pop", input: { outcome: "completed", whatWasDone: "x", whyClosed: "y", evidence: "", effectsOnParent: "" } },
         { tool: "user", input: { message: "done", response: "none" } },
       ],

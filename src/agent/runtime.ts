@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import type { ModelAction, PopAction, PushAction, ToolName, UserRequestAction } from "../stack/schemas.ts"
+import type { ModelAction, PopAction, PushAction, ToolName, TodoAction, UserRequestAction } from "../stack/schemas.ts"
 import type {
   AgentMode,
   AgentState,
@@ -42,7 +42,7 @@ export type AgentRuntimeOptions = {
 const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
   // Planning is separate from execution: establish a frame before inspecting or changing anything.
   push: ["push", "user"],
-  execute: ["bash", "read", "edit", "push", "pop", "spawn", "user"],
+  execute: ["bash", "read", "edit", "push", "pop", "todo", "spawn", "user"],
   waiting_for_user: [],
 }
 
@@ -69,6 +69,8 @@ export class AgentRuntime {
   private activeTool?: string
   private activeToolSince?: number
   private toolStream = ""
+  private pendingToolOk = true
+  private lastTool?: { tool: string; ok: boolean; at: number }
   private protocolErrors = 0
   private streaming?: StreamingState
   private abortController?: AbortController
@@ -182,6 +184,7 @@ export class AgentRuntime {
       ...(this.activeTool === "bash" && this.toolStream
         ? { toolOutput: this.toolStream.split("\n").filter((line) => line.trim().length > 0).at(-1) ?? "" }
         : {}),
+      ...(this.lastTool ? { lastTool: this.lastTool } : {}),
       conversation: [...this.conversation.entries()],
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
@@ -455,14 +458,22 @@ export class AgentRuntime {
           return await this.handleSpawn(action.input)
         case "pop":
           return this.handlePop(action.input)
+        case "todo":
+          return this.handleTodo(action.input)
         case "user":
           return this.handleUser(action.input)
       }
     } finally {
+      if (action.tool !== "user") {
+        this.lastTool = { tool: action.tool, ok: this.pendingToolOk, at: Date.now() }
+      }
+      this.pendingToolOk = true
       this.activeTool = undefined
       this.activeToolSince = undefined
+      this.toolStream = ""
       this.emitState()
     }
+    return true
   }
 
   private validateAction(action: ModelAction): string | undefined {
@@ -475,7 +486,7 @@ export class AgentRuntime {
     if (action.tool === "push" && this.stack.depth >= this.maxStackDepth) {
       return `Cannot push: maximum stack depth (${this.maxStackDepth}) reached.`
     }
-    const requiresFrame: ToolName[] = ["bash", "read", "edit", "pop", "spawn"]
+    const requiresFrame: ToolName[] = ["bash", "read", "edit", "pop", "todo", "spawn"]
     if (requiresFrame.includes(action.tool) && this.stack.isEmpty) {
       return `Tool "${action.tool}" requires an active task frame. Push one first, or report to the user.`
     }
@@ -508,7 +519,7 @@ export class AgentRuntime {
       ? output || "(no output)"
       : `command failed${value ? ` (exit ${value.exitCode})` : ""}: ${result.error ?? "unknown error"}${output ? `\n${output}` : ""}`
 
-    this.observe(observation)
+    this.observe(observation, result.ok)
     return true
   }
 
@@ -518,7 +529,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "read", ok: result.ok })
 
     if (!result.ok || !result.value) {
-      this.observe(`read ${path} FAILED: ${result.error ?? "unknown error"}`)
+      this.observe(`read ${path} FAILED: ${result.error ?? "unknown error"}`, false)
       return true
     }
 
@@ -555,7 +566,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })
 
     if (!result.ok || !result.value) {
-      this.observe(`edit ${path} FAILED: ${result.error ?? "unknown error"}`)
+      this.observe(`edit ${path} FAILED: ${result.error ?? "unknown error"}`, false)
       return true
     }
 
@@ -636,12 +647,48 @@ export class AgentRuntime {
     return true
   }
 
+  /** Resolve one step of the current frame's todo list. */
+  private handleTodo(action: TodoAction): boolean {
+    const frame = this.stack.top
+    if (!frame) {
+      this.observe("todo FAILED: no active frame", false)
+      return true
+    }
+    const todo = frame.todos[action.index - 1]
+    if (!todo) {
+      this.observe(`todo FAILED: #${action.index} does not exist (the frame has ${frame.todos.length} steps)`, false)
+      return true
+    }
+    if (action.status === "abandoned" && !action.note) {
+      this.observe(`todo FAILED: abandoning #${action.index} needs a note explaining why`, false)
+      return true
+    }
+    this.stack.markTodo(action.index, action.status, action.note)
+    this.observe(`todo #${action.index} ${action.status} · ${todo.text}`)
+    return true
+  }
+
   private handlePop(action: PopAction): boolean {
+    // A frame is a checklist: it cannot close until every step is resolved.
+    const frame = this.stack.top
+    if (frame) {
+      const pending = frame.todos.filter((todo) => todo.status === "pending")
+      if (pending.length > 0) {
+        this.observe(
+          `pop REFUSED: ${pending.length} step${pending.length === 1 ? "" : "s"} still pending — mark them done or abandoned with todo() first:\n${pending
+            .map((todo) => `  · ${todo.text}`)
+            .join("\n")}`,
+          false,
+        )
+        return true
+      }
+    }
+
     let closed: ClosedFrame
     try {
       closed = this.stack.pop(action)
     } catch (error) {
-      this.observe(`pop FAILED: ${error instanceof Error ? error.message : String(error)}`)
+      this.observe(`pop FAILED: ${error instanceof Error ? error.message : String(error)}`, false)
       return true
     }
     this.closedFrames.push(closed)
@@ -687,7 +734,8 @@ export class AgentRuntime {
   // ---------------------------------------------------------------------------
 
   /** Record a tool observation (the action entry was already added at tool start). */
-  private observe(observation: string): void {
+  private observe(observation: string, ok = true): void {
+    this.pendingToolOk = ok
     this.addEntry("observation", observation)
     this.observation = observation
     this.emitState()

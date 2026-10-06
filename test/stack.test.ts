@@ -6,6 +6,7 @@ const frame = (why: string) => ({
   scope: `scope: ${why}`,
   knownContext: "ctx",
   definitionOfDone: `done: ${why}`,
+  todos: ["step one"],
 })
 
 describe("TaskStack", () => {
@@ -44,8 +45,8 @@ describe("TaskStack", () => {
 
   test("frames carry structured self-prompt fields", () => {
     const stack = new TaskStack()
-    const f = stack.push({ why: "w", scope: "s", knownContext: "k", definitionOfDone: "d" })
-    expect(f).toMatchObject({ why: "w", scope: "s", knownContext: "k", definitionOfDone: "d" })
+    const f = stack.push({ why: "w", scope: "s", knownContext: "k", definitionOfDone: "d", todos: ["step one"] })
+    expect(f).toMatchObject({ why: "w", scope: "s", knownContext: "k", definitionOfDone: "d", todos: [{ text: "step one", status: "pending" }] })
     expect(f.createdAt).toBeGreaterThan(0)
   })
 })

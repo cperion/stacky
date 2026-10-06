@@ -6,12 +6,25 @@
 
 export type AgentMode = "push" | "execute" | "waiting_for_user"
 
+export type TodoStatus = "pending" | "done" | "abandoned"
+
+export type Todo = {
+  id: string
+  text: string
+  status: TodoStatus
+  note?: string
+}
+
 export type TaskFrame = {
   id: string
+  /** Short imperative title for display (falls back to the first line of why). */
+  title: string
   why: string
   scope: string
   knownContext: string
   definitionOfDone: string
+  /** Ordered checklist for this frame; pop() requires every item resolved. */
+  todos: Todo[]
   createdAt: number
 }
 
@@ -130,6 +143,8 @@ export type AgentState = {
   phaseStartedAt?: number
   /** Last line of a running command's output, for live feedback. */
   toolOutput?: string
+  /** The most recently finished tool and whether it succeeded (for a brief flash). */
+  lastTool?: { tool: string; ok: boolean; at: number }
   conversation: ConversationEntry[]
   stack: TaskFrame[]
   closedFrames: ClosedFrame[]

@@ -17,8 +17,34 @@ function state(overrides: Partial<AgentState>): AgentState {
 }
 
 describe("statusChip", () => {
-  test("waiting for the user", () => {
-    expect(statusChip(state({ mode: "waiting_for_user" })).label).toBe("WAIT")
+  test("waiting states say why", () => {
+    expect(statusChip(state({ mode: "waiting_for_user" })).label).toBe("WAIT ·reply")
+    expect(
+      statusChip(
+        state({
+          mode: "waiting_for_user",
+          userRequest: { id: "1", at: 0, resolved: false, message: "?", response: "required", choices: [{ id: "a", label: "A" }] },
+        }),
+      ).label,
+    ).toBe("WAIT ·choice")
+  })
+
+  test("flashes the last tool result briefly", () => {
+    const ok = statusChip(state({ lastTool: { tool: "bash", ok: true, at: 1000 } }), 1500)
+    expect(ok.label).toBe("TOOL bash ✓")
+    const bad = statusChip(state({ lastTool: { tool: "bash", ok: false, at: 1000 } }), 1500)
+    expect(bad.label).toBe("TOOL bash ✗")
+    // Expired: back to the normal phase.
+    expect(statusChip(state({ lastTool: { tool: "bash", ok: true, at: 1000 } }), 9000).label).toBe("IDLE")
+  })
+
+  test("shows tokens per second while writing", () => {
+    const writing = state({
+      running: true,
+      streaming: { active: true, reasoning: "", text: "x".repeat(400), startedAt: 0, textStartedAt: 2000 },
+    })
+    // 400 chars ~= 100 tokens over 2s.
+    expect(statusChip(writing, 4000).label).toBe("WRITE 50 t/s")
   })
 
   test("streaming reasoning vs text", () => {

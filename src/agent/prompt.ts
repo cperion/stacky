@@ -13,9 +13,10 @@ export const SYSTEM_RULES = `You are a stack-driven coding agent. You operate ON
 - bash(command): inspect or operate on the environment. Output is an observation, not persistent file context.
 - read(path): read a file AND bring it into your live file working set.
 - edit(path, edits): modify a file by exact-text replacement. Also refreshes the file in the working set. You MUST read(path) first — edit() is refused for an existing file that is not in your working set.
-- push({why, scope, knownContext, definitionOfDone}): enter a new task frame. It becomes the TOP of the stack and runs before the current frame resumes. Use this whenever you discover a prerequisite.
-- spawn({why, scope, knownContext, definitionOfDone}): delegate a self-contained sub-task to a fresh subagent with its own task stack and file working set. Use it to keep your own context clean; the subagent runs to completion and returns a report.
-- pop({outcome, whatWasDone, whyClosed, evidence, effectsOnParent}): close the TOP frame and record why. pop() does NOT mean success. Valid outcomes: completed, disproven, unnecessary, abandoned, superseded, blocked, failed, partial. Never abandon a direction silently.
+- push({title, why, scope, knownContext, definitionOfDone, todos}): enter a new task frame. title is a short imperative label (<= 6 words) shown in the UI (e.g. Fix token expiry parsing). todos is an ordered list of concrete steps for the frame. It becomes the TOP of the stack and runs before the current frame resumes.
+- spawn({title, why, scope, knownContext, definitionOfDone, todos}): delegate a self-contained sub-task to a fresh subagent with its own task stack and file working set. Use it to keep your own context clean; the subagent runs to completion and returns a report.
+- todo({index, status, note}): mark a step (1-based) of the TOP frame done or abandoned. Every step you listed must be resolved this way before you may pop the frame.
+- pop({outcome, whatWasDone, whyClosed, evidence, effectsOnParent}): close the TOP frame and record why. Refused while any todo is still pending. pop() does NOT mean success. Valid outcomes: completed, disproven, unnecessary, abandoned, superseded, blocked, failed, partial. Never abandon a direction silently.
 - user({message, response, choices?, preferredChoice?}): the only human boundary. response="required" suspends until the human answers; response="none" reports and yields.
 
 ## Execution discipline
@@ -111,7 +112,7 @@ function renderStack(stack: readonly TaskFrame[], mode: AgentMode): string {
     lines.push(`## PARENT FRAMES (not executable until the top frame is popped)`)
     for (let i = parents.length - 1; i >= 0; i--) {
       const frame = parents[i]!
-      lines.push(`- ${frame.why.split("\n")[0]}`)
+      lines.push(`- ${frame.title}`)
     }
   }
 
@@ -121,11 +122,16 @@ function renderStack(stack: readonly TaskFrame[], mode: AgentMode): string {
 }
 
 export function frameBlock(frame: TaskFrame): string {
+  const todos = frame.todos
+    .map((todo, index) => `  ${index + 1}. [${todo.status}] ${todo.text}${todo.note ? ` — ${todo.note}` : ""}`)
+    .join("\n")
   return [
+    `Title: ${frame.title}`,
     `Why: ${frame.why}`,
     `Scope: ${frame.scope}`,
     `Known Context: ${frame.knownContext || "(none recorded)"}`,
     `Definition of Done: ${frame.definitionOfDone}`,
+    `Todos (resolve every one with todo() before pop()):\n${todos}`,
   ].join("\n")
 }
 

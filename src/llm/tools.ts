@@ -6,6 +6,7 @@ import {
   popSchema,
   pushSchema,
   readSchema,
+  todoSchema,
   userRequestSchema,
   type ToolName,
 } from "../stack/schemas.ts"
@@ -17,7 +18,8 @@ export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   push: "Enter a new task frame that must be handled before the current frame can resume. This is how you record a discovered prerequisite or a focused sub-investigation. It becomes the new top of stack.",
   spawn:
     "Delegate a self-contained sub-task to a fresh subagent with its own task stack and file working set. Use it to keep your own context clean when a sub-task is independent. The subagent runs to completion and returns a report.",
-  pop: "Close the current top task frame and record why it is no longer active. pop() does NOT mean success — it records a disposition (completed, disproven, unnecessary, abandoned, superseded, blocked, failed, partial).",
+  pop: "Close the current top task frame and record why it is no longer active. pop() does NOT mean success — it records a disposition (completed, disproven, unnecessary, abandoned, superseded, blocked, failed, partial). Refused while any todo of the frame is still pending.",
+  todo: "Mark a step (1-based) of the current frame's todo list as done or abandoned. pop() is refused until every step is resolved.",
   user: 'The ONLY way to produce user-visible output. Use response="required" to ask the human and suspend; response="none" to report a final result and yield.',
 }
 
@@ -34,6 +36,7 @@ export function buildTools(allowed: readonly ToolName[]): ToolSet {
     edit: () => tool({ description: TOOL_DESCRIPTIONS.edit, inputSchema: editPatchSchema }),
     push: () => tool({ description: TOOL_DESCRIPTIONS.push, inputSchema: pushSchema }),
     pop: () => tool({ description: TOOL_DESCRIPTIONS.pop, inputSchema: popSchema }),
+    todo: () => tool({ description: TOOL_DESCRIPTIONS.todo, inputSchema: todoSchema }),
     spawn: () => tool({ description: TOOL_DESCRIPTIONS.spawn, inputSchema: pushSchema }),
     user: () => tool({ description: TOOL_DESCRIPTIONS.user, inputSchema: userRequestSchema }),
   }

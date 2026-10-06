@@ -27,7 +27,7 @@ describe("streaming", () => {
         handlers?.onReasoningDelta?.("I will push a frame.")
         return {
           tool: "push",
-          input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" },
+          input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] },
         }
       },
       { tool: "user", input: { message: "ok", response: "none" } },
@@ -58,7 +58,7 @@ describe("streaming", () => {
     const runtime = makeRuntime([
       (_input, handlers) => {
         handlers?.onReasoningDelta?.("SECRET_REASONING")
-        return { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } }
+        return { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } }
       },
       (input) => {
         sawPrompt = input.prompt
@@ -74,7 +74,7 @@ describe("streaming", () => {
     const runtime = makeRuntime([
       (_input, handlers) => {
         handlers?.onTextDelta?.("thinking out loud")
-        return { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } }
+        return { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } }
       },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
@@ -101,7 +101,7 @@ describe("runtime settings", () => {
 
   test("setBudgets evicts files and shrinks conversation", async () => {
     const runtime = makeRuntime([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "bash", input: { command: "true" } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
@@ -114,7 +114,7 @@ describe("runtime settings", () => {
 
   test("reset clears stack, conversation and files", async () => {
     const runtime = makeRuntime([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
     await runtime.request("go")

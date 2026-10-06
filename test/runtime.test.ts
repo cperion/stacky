@@ -27,10 +27,11 @@ describe("AgentRuntime", () => {
     const events: RuntimeEvent[] = []
     const runtime = makeRuntime(
       [
-        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         { tool: "read", input: { path: "a.txt" } },
         { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "hello stacky" }] } },
         { tool: "bash", input: { command: "cat a.txt" } },
+        { tool: "todo", input: { index: 1, status: "done" } },
         {
           tool: "pop",
           input: { outcome: "completed", whatWasDone: "edited", whyClosed: "done", evidence: "cat", effectsOnParent: "none" },
@@ -56,7 +57,7 @@ describe("AgentRuntime", () => {
 
   test("user(required) suspends the loop and resumes the same frame", async () => {
     const runtime = makeRuntime([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "a.txt" } },
       {
         tool: "user",
@@ -71,6 +72,7 @@ describe("AgentRuntime", () => {
         },
       },
       { tool: "bash", input: { command: "echo resumed" } },
+      { tool: "todo", input: { index: 1, status: "done" } },
       { tool: "pop", input: { outcome: "completed", whatWasDone: "did it", whyClosed: "done", evidence: "", effectsOnParent: "" } },
       { tool: "user", input: { message: "Done.", response: "none" } },
     ])
@@ -94,7 +96,7 @@ describe("AgentRuntime", () => {
     const runtime = makeRuntime(
       [
         { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "nope" }] } },
-        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         { tool: "user", input: { message: "Yielded with an active frame.", response: "none" } },
       ],
       events,
@@ -110,11 +112,12 @@ describe("AgentRuntime", () => {
     const events: RuntimeEvent[] = []
     const runtime = makeRuntime(
       [
+        { tool: "todo", input: { index: 1, status: "done" } },
         {
           tool: "pop",
           input: { outcome: "completed", whatWasDone: "x", whyClosed: "y", evidence: "", effectsOnParent: "" },
         },
-        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         { tool: "user", input: { message: "ok", response: "none" } },
       ],
       events,
@@ -126,7 +129,7 @@ describe("AgentRuntime", () => {
   test("edit refuses ambiguous matches", async () => {
     writeFileSync(join(dir, "dup.txt"), "x\nx\n")
     const runtime = makeRuntime([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "dup.txt" } },
       { tool: "edit", input: { path: "dup.txt", edits: [{ oldText: "x", newText: "y" }] } },
       { tool: "user", input: { message: "done", response: "none" } },
@@ -139,7 +142,7 @@ describe("AgentRuntime", () => {
     const events: RuntimeEvent[] = []
     const runtime = makeRuntime(
       [
-        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
         { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "nope" }] } },
         { tool: "read", input: { path: "a.txt" } },
         { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "hello!" }] } },
@@ -156,7 +159,7 @@ describe("AgentRuntime", () => {
 
   test("creates a new file when oldText is empty", async () => {
     const runtime = makeRuntime([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "edit", input: { path: "new/dir/file.txt", edits: [{ oldText: "", newText: "created" }] } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])

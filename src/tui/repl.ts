@@ -15,7 +15,7 @@ import { applyTheme, theme } from "./theme.ts"
 import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
-import { renderChip, statusChip } from "./status.ts"
+import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -393,7 +393,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   // Elapsed-time feedback: refresh the footer while a turn is in flight.
   const ticker = setInterval(() => {
-    if (opts.runtime.isRunning) updateFooter(opts.runtime.snapshot())
+    const state = opts.runtime.snapshot()
+    const flashing = state.lastTool !== undefined && Date.now() - state.lastTool.at < TOOL_FLASH_MS
+    if (state.running || flashing) updateFooter(state)
   }, 250)
 
   updateFooter(opts.runtime.snapshot())
@@ -445,11 +447,16 @@ function buildDashboard(state: AgentState, width: number, showFiles: boolean, bu
 
   const top = state.stack[state.stack.length - 1]
   if (top) {
-    field("TASK", top.why)
+    field("TASK", top.title)
+    field("WHY", top.why)
     field("SCOPE", top.scope)
     field("DONE", top.definitionOfDone)
+    for (const [index, todo] of top.todos.entries()) {
+      const glyph = todo.status === "done" ? "✓" : todo.status === "abandoned" ? "✗" : "·"
+      field(index === 0 ? "TODO" : "", `${glyph} ${todo.text}${todo.note ? ` — ${todo.note}` : ""}`)
+    }
     const parent = state.stack[state.stack.length - 2]
-    if (parent) field("PARENT", parent.why)
+    if (parent) field("PARENT", parent.title)
   } else {
     field("TASK", "no active frame")
   }

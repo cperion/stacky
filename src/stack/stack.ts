@@ -1,17 +1,25 @@
 import { randomUUID } from "node:crypto"
-import type { ClosedFrame, PopOutcome, TaskDisposition, TaskFrame } from "../agent/types.ts"
+import type { ClosedFrame, PopOutcome, TaskDisposition, TaskFrame, Todo, TodoStatus } from "../agent/types.ts"
 import type { PopAction, PushAction } from "./schemas.ts"
 
 let frameCounter = 0
 
 export function createFrame(action: PushAction, now = Date.now()): TaskFrame {
   frameCounter += 1
+  const fallbackTitle = action.why.split("\n")[0]?.trim().slice(0, 60) ?? "task"
+  const todos: Todo[] = action.todos.map((text) => ({
+    id: randomUUID().slice(0, 8),
+    text,
+    status: "pending" as TodoStatus,
+  }))
   return {
     id: `f${frameCounter}-${randomUUID().slice(0, 8)}`,
+    title: action.title?.trim() || fallbackTitle,
     why: action.why,
     scope: action.scope,
     knownContext: action.knownContext ?? "",
     definitionOfDone: action.definitionOfDone,
+    todos,
     createdAt: now,
   }
 }
@@ -61,6 +69,16 @@ export class TaskStack {
       closedAt: now,
     }
     return { intent: frame, disposition }
+  }
+
+  /** Update a 1-based todo on the top frame. Returns the todo, or undefined. */
+  markTodo(index: number, status: TodoStatus, note?: string): Todo | undefined {
+    const top = this.top
+    const todo = top?.todos[index - 1]
+    if (!todo) return undefined
+    todo.status = status
+    if (note !== undefined) todo.note = note
+    return todo
   }
 
   clear(): void {

@@ -9,6 +9,12 @@
 import { z } from "zod"
 
 export const pushSchema = z.object({
+  title: z
+    .string()
+    .min(1)
+    .max(80)
+    .optional()
+    .describe("A short imperative title for this frame (<= 6 words), used in the UI. e.g. \"Fix token expiry parsing\"."),
   why: z.string().min(1).describe("Why this frame exists and must be handled now."),
   scope: z
     .string()
@@ -24,6 +30,18 @@ export const pushSchema = z.object({
     .describe(
       "The condition under which this frame can be closed. This does not require the initial hypothesis to be correct.",
     ),
+  todos: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe(
+      "Ordered, concrete steps this frame will perform. Each must later be marked done with todo({index, status:\"done\"}) or abandoned with todo({index, status:\"abandoned\", note}). pop() is refused while any step is still pending.",
+    ),
+})
+
+export const todoSchema = z.object({
+  index: z.number().int().min(1).describe("1-based index of the todo in the current frame."),
+  status: z.enum(["done", "abandoned"]).describe("Mark this step done, or abandoned (needs a note)."),
+  note: z.string().optional().describe("Why the step was abandoned or left undone."),
 })
 
 export const popSchema = z.object({
@@ -102,6 +120,7 @@ export const ACTION_SCHEMAS = {
   edit: editPatchSchema,
   push: pushSchema,
   pop: popSchema,
+  todo: todoSchema,
   spawn: pushSchema,
   user: userRequestSchema,
 } as const
@@ -110,6 +129,7 @@ export type ToolName = keyof typeof ACTION_SCHEMAS
 
 export type PushAction = z.infer<typeof pushSchema>
 export type PopAction = z.infer<typeof popSchema>
+export type TodoAction = z.infer<typeof todoSchema>
 export type UserRequestAction = z.infer<typeof userRequestSchema>
 export type BashAction = z.infer<typeof bashSchema>
 export type ReadAction = z.infer<typeof readSchema>

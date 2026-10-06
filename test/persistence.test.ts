@@ -22,7 +22,7 @@ function runtimeWith(steps: ScriptStep[]) {
 describe("session persistence", () => {
   test("saves paths, stack, history and metrics — never file contents", async () => {
     const runtime = runtimeWith([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "a.txt" } },
       { tool: "user", input: { message: "Explain?", response: "required" } },
     ])
@@ -47,7 +47,8 @@ describe("session persistence", () => {
 
   test("restores an empty stack as push mode", async () => {
     const runtime = runtimeWith([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
+      { tool: "todo", input: { index: 1, status: "done" } },
       { tool: "pop", input: { outcome: "completed", whatWasDone: "x", whyClosed: "y", evidence: "", effectsOnParent: "" } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
@@ -63,7 +64,7 @@ describe("session persistence", () => {
 
   test("re-materializes contents from disk instead of resurrecting stale state", () => {
     const runtime = runtimeWith([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "a.txt" } },
       { tool: "user", input: { message: "x", response: "none" } },
     ])
@@ -83,8 +84,9 @@ describe("session persistence", () => {
 describe("metrics", () => {
   test("counts frames, tools, files and outcomes", async () => {
     const runtime = runtimeWith([
-      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "a.txt" } },
+      { tool: "todo", input: { index: 1, status: "done" } },
       { tool: "pop", input: { outcome: "disproven", whatWasDone: "x", whyClosed: "y", evidence: "", effectsOnParent: "" } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
@@ -95,7 +97,7 @@ describe("metrics", () => {
     expect(m.maxStackDepth).toBe(1)
     expect(m.filesPromoted).toBe(1)
     expect(m.outcomes.disproven).toBe(1)
-    expect(m.toolCalls).toBe(4)
-    expect(m.llmCalls).toBe(4)
+    expect(m.toolCalls).toBe(5)
+    expect(m.llmCalls).toBe(5)
   })
 })

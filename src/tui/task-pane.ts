@@ -89,6 +89,16 @@ export class TaskPane {
     parts.push(...this.field("Scope", frame.scope, width))
     parts.push(...this.field("Known", frame.knownContext || "—", width))
     parts.push(...this.field("Done when", frame.definitionOfDone, width))
+    if (frame.todos.length > 0) {
+      const done = frame.todos.filter((todo) => todo.status !== "pending").length
+      parts.push(bold(`Todo (${done}/${frame.todos.length})`), plain("\n"))
+      for (const todo of frame.todos) {
+        const glyph = todo.status === "done" ? "✓" : todo.status === "abandoned" ? "✗" : "·"
+        const color = todo.status === "done" ? theme.green : todo.status === "abandoned" ? theme.red : theme.dim
+        parts.push(concat([fg(color)(glyph), plain(` ${todo.text}`), ...(todo.note ? [dim(` — ${todo.note}`)] : [])]), plain("\n"))
+      }
+      parts.push(plain("\n"))
+    }
     return parts
   }
 
@@ -99,7 +109,7 @@ export class TaskPane {
   private renderParents(parents: TaskFrame[], width: number): Part[] {
     const parts: Part[] = [plain("\n"), header("PARENTS", `${parents.length}`, width), plain("\n"), paneRule(width), plain("\n")]
     for (const frame of [...parents].reverse()) {
-      parts.push(plain("\n"), t`${dim("·")} ${frame.why.split("\n")[0] ?? ""}`)
+      parts.push(plain("\n"), t`${dim("·")} ${frame.title}`)
     }
     return parts
   }
@@ -108,7 +118,7 @@ export class TaskPane {
     const parts: Part[] = [header("HISTORY", `${history.length}`, width), plain("\n"), paneRule(width)]
     for (const closed of [...history].reverse().slice(0, 15)) {
       parts.push(plain("\n"))
-      parts.push(t`${fg(theme.green)("✓")} ${closed.intent.why.split("\n")[0] ?? ""}`)
+      parts.push(t`${fg(theme.green)("✓")} ${closed.intent.title}`)
       parts.push(plain("\n"))
       parts.push(dim(`  ${closed.disposition.outcome} · ${closed.disposition.whyClosed}`))
       parts.push(plain("\n"))

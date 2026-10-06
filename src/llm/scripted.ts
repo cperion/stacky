@@ -59,7 +59,7 @@ export class DemoLLM implements LLMClient {
               "Do not modify any file.",
             knownContext: "The workspace is a fresh Bun + TypeScript project called stacky.",
             definitionOfDone:
-              "A concise, evidence-backed summary of the repository structure has been produced and the user has been asked whether to continue.",
+              "A concise, evidence-backed summary of the repository structure has been produced and the user has been asked whether to continue.", todos: ["step one"],
           },
         }
       case 2:

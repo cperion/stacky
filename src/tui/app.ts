@@ -9,7 +9,7 @@ import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { applyTheme, theme } from "./theme.ts"
 import { concat, plain } from "./render.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
-import { renderChip, statusChip } from "./status.ts"
+import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 
 export type AppOptions = {
@@ -116,7 +116,8 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
 
   const spinnerTimer = setInterval(() => {
     const state = opts.runtime.snapshot()
-    if (state.streaming?.active || state.mode === "execute") {
+    const flashing = state.lastTool !== undefined && Date.now() - state.lastTool.at < TOOL_FLASH_MS
+    if (state.streaming?.active || state.mode === "execute" || flashing) {
       spin += 1
       requestRender()
     }
