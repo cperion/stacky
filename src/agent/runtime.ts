@@ -67,6 +67,8 @@ export class AgentRuntime {
   private observation = ""
   private running = false
   private activeTool?: string
+  private activeToolSince?: number
+  private toolStream = ""
   private protocolErrors = 0
   private streaming?: StreamingState
   private abortController?: AbortController
@@ -174,6 +176,12 @@ export class AgentRuntime {
       mode: this.mode,
       running: this.running,
       ...(this.activeTool ? { activeTool: this.activeTool } : {}),
+      ...((this.activeToolSince ?? this.streaming?.startedAt)
+        ? { phaseStartedAt: this.activeToolSince ?? this.streaming?.startedAt }
+        : {}),
+      ...(this.activeTool === "bash" && this.toolStream
+        ? { toolOutput: this.toolStream.split("\n").filter((line) => line.trim().length > 0).at(-1) ?? "" }
+        : {}),
       conversation: [...this.conversation.entries()],
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
@@ -263,6 +271,7 @@ export class AgentRuntime {
   async run(): Promise<void> {
     if (this.running) return
     this.running = true
+    this.emitState()
     try {
       let steps = 0
       while (steps < this.maxStepsPerRun) {
@@ -426,6 +435,11 @@ export class AgentRuntime {
     this.metrics.toolCalls += 1
 
     this.activeTool = action.tool
+    this.activeToolSince = Date.now()
+    // Show the action the moment it starts, before it runs (instant feedback).
+    if (action.tool !== "user") {
+      this.addEntry("action", describeToolCall(action.tool, action.input), { tool: action.tool })
+    }
     this.emitState()
     try {
       switch (action.tool) {
@@ -446,6 +460,7 @@ export class AgentRuntime {
       }
     } finally {
       this.activeTool = undefined
+      this.activeToolSince = undefined
       this.emitState()
     }
   }
@@ -475,7 +490,16 @@ export class AgentRuntime {
 
   private async handleBash(command: string, timeoutMs?: number): Promise<boolean> {
     this.bus.emit({ type: "tool.started", tool: "bash" })
-    const result = await runBash(command, { cwd: this.cwd, timeoutMs })
+    this.toolStream = ""
+    const result = await runBash(command, {
+      cwd: this.cwd,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      onOutput: (chunk) => {
+        this.toolStream += chunk
+        this.emitState()
+      },
+    })
+    this.toolStream = ""
     this.bus.emit({ type: "tool.finished", tool: "bash", ok: result.ok })
 
     const value = result.value
@@ -484,7 +508,7 @@ export class AgentRuntime {
       ? output || "(no output)"
       : `command failed${value ? ` (exit ${value.exitCode})` : ""}: ${result.error ?? "unknown error"}${output ? `\n${output}` : ""}`
 
-    this.record("bash", { command }, observation)
+    this.observe(observation)
     return true
   }
 
@@ -494,7 +518,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "read", ok: result.ok })
 
     if (!result.ok || !result.value) {
-      this.record("read", { path }, `read ${path} FAILED: ${result.error ?? "unknown error"}`)
+      this.observe(`read ${path} FAILED: ${result.error ?? "unknown error"}`)
       return true
     }
 
@@ -506,9 +530,7 @@ export class AgentRuntime {
 
     const lines = result.value.content.split("\n").length
     const note = result.value.truncated ? " · truncated" : ""
-    this.record(
-      "read",
-      { path },
+    this.observe(
       `${path} · ${lines} lines · ~${entry.tokenCount} tokens${note} · now in the working set`,
     )
     return true
@@ -522,10 +544,8 @@ export class AgentRuntime {
     if (exists && !this.files.has(path)) {
       this.bus.emit({ type: "tool.started", tool: "edit" })
       this.bus.emit({ type: "tool.finished", tool: "edit", ok: false })
-      this.record(
-        "edit",
-        { path, edits },
-        `refused: ${path} is not in your working set. Call read("${path}") first, then retry the edit against the current contents.`,
+      this.observe(
+      `refused: ${path} is not in your working set. Call read("${path}") first, then retry the edit against the current contents.`,
       )
       return true
     }
@@ -535,7 +555,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })
 
     if (!result.ok || !result.value) {
-      this.record("edit", { path, edits }, `edit ${path} FAILED: ${result.error ?? "unknown error"}`)
+      this.observe(`edit ${path} FAILED: ${result.error ?? "unknown error"}`)
       return true
     }
 
@@ -546,9 +566,7 @@ export class AgentRuntime {
     for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
 
     const verb = result.value.created ? "created" : "updated"
-    this.record(
-      "edit",
-      { path, edits },
+    this.observe(
       `${verb} ${path} · ${result.value.replacements} replacement${result.value.replacements === 1 ? "" : "s"} · ~${entry.tokenCount} tokens · now in the working set`,
     )
     return true
@@ -604,7 +622,7 @@ export class AgentRuntime {
     this.metrics.subagents += 1
     this.bus.emit({ type: "tool.finished", tool: "spawn", ok })
     this.bus.emit({ type: "subagent.finished", depth: child.depth, report })
-    this.record("spawn", action, `subagent report:\n${report}`)
+    this.observe(`subagent report:\n${report}`)
     return true
   }
 
@@ -614,7 +632,7 @@ export class AgentRuntime {
     this.metrics.pushes += 1
     this.metrics.maxStackDepth = Math.max(this.metrics.maxStackDepth, this.stack.depth)
     this.bus.emit({ type: "frame.pushed", frame })
-    this.record("push", { why: action.why, scope: action.scope }, `top of stack · depth ${this.stack.depth}`)
+    this.observe(`top of stack · depth ${this.stack.depth}`)
     return true
   }
 
@@ -623,16 +641,14 @@ export class AgentRuntime {
     try {
       closed = this.stack.pop(action)
     } catch (error) {
-      this.record("pop", { outcome: action.outcome }, `pop FAILED: ${error instanceof Error ? error.message : String(error)}`)
+      this.observe(`pop FAILED: ${error instanceof Error ? error.message : String(error)}`)
       return true
     }
     this.closedFrames.push(closed)
     this.metrics.pops += 1
     this.metrics.outcomes[closed.disposition.outcome] += 1
     this.bus.emit({ type: "frame.popped", frame: closed })
-    this.record(
-      "pop",
-      { outcome: action.outcome, whyClosed: action.whyClosed },
+    this.observe(
       `closed · ${closed.disposition.outcome} · depth ${this.stack.depth}`,
     )
     return true
@@ -670,8 +686,8 @@ export class AgentRuntime {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private record(tool: string, input: unknown, observation: string): void {
-    this.addEntry("action", describeToolCall(tool, input), { tool })
+  /** Record a tool observation (the action entry was already added at tool start). */
+  private observe(observation: string): void {
     this.addEntry("observation", observation)
     this.observation = observation
     this.emitState()

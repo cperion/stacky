@@ -39,7 +39,18 @@ describe("statusChip", () => {
     expect(statusChip(state({ mode: "execute", running: false })).label).toBe("IDLE")
   })
 
-  test("the waiting chip is coloured", () => {
-    expect(statusChip(state({ mode: "waiting_for_user" })).color).toBeDefined()
+  test("coloured chips carry a contrasting fg/bg pair", () => {
+    const wait = statusChip(state({ mode: "waiting_for_user" }))
+    expect(wait.bar).toBeDefined()
+    expect(wait.text).toBeDefined()
+    const ready = statusChip(state({ mode: "push", running: false }))
+    expect(ready.bar).toBeUndefined()
+  })
+
+  test("shows elapsed time while a phase is running", () => {
+    const running = state({ running: true, activeTool: "bash", phaseStartedAt: 1000 })
+    expect(statusChip(running, 3500).label).toBe("TOOL bash 2.5s")
+    // No elapsed suffix once the phase is over.
+    expect(statusChip(state({ activeTool: "bash", phaseStartedAt: 1000 }), 3500).label).toBe("TOOL bash")
   })
 })

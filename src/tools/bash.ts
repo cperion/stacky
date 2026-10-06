@@ -7,6 +7,13 @@ export type BashValue = {
   truncated: boolean
 }
 
+export type BashOptions = {
+  cwd: string
+  timeoutMs?: number
+  /** Called as output arrives, so the UI can show a command while it runs. */
+  onOutput?: (chunk: string) => void
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_OUTPUT_CHARS = 24_000
 
@@ -20,11 +27,8 @@ function truncate(text: string, limit = MAX_OUTPUT_CHARS): { text: string; trunc
   }
 }
 
-/** General operating-system access. Output is an observation, not persistent file context. */
-export async function runBash(
-  command: string,
-  opts: { cwd: string; timeoutMs?: number },
-): Promise<ToolResult<BashValue>> {
+/** General operating-system access. Output streams as it is produced. */
+export async function runBash(command: string, opts: BashOptions): Promise<ToolResult<BashValue>> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   try {
     const proc = Bun.spawn(["bash", "-lc", command], {
@@ -40,11 +44,25 @@ export async function runBash(
       proc.kill()
     }, timeoutMs)
 
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]).finally(() => clearTimeout(timer))
+    let stdout = ""
+    let stderr = ""
+    const decoder = new TextDecoder()
+
+    const pump = async (stream: ReadableStream<Uint8Array>, sink: "out" | "err"): Promise<void> => {
+      const reader = stream.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        const text = decoder.decode(value, { stream: true })
+        if (sink === "out") stdout += text
+        else stderr += text
+        opts.onOutput?.(text)
+      }
+    }
+
+    await Promise.all([pump(proc.stdout as ReadableStream<Uint8Array>, "out"), pump(proc.stderr as ReadableStream<Uint8Array>, "err")])
+    const exitCode = await proc.exited
+    clearTimeout(timer)
 
     const combined = stderr.length > 0 ? `${stdout}${stdout && !stdout.endsWith("\n") ? "\n" : ""}[stderr]\n${stderr}` : stdout
     const { text, truncated } = truncate(combined)

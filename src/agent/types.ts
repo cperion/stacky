@@ -126,6 +126,10 @@ export type AgentState = {
   running: boolean
   /** Tool currently executing, if any. */
   activeTool?: string
+  /** When the current phase (tool or model call) started, for elapsed feedback. */
+  phaseStartedAt?: number
+  /** Last line of a running command's output, for live feedback. */
+  toolOutput?: string
   conversation: ConversationEntry[]
   stack: TaskFrame[]
   closedFrames: ClosedFrame[]

@@ -100,6 +100,9 @@ export class ChatPane {
 
     const streaming = state.streaming
     if (streaming?.active) this.addBlock(this.renderStreaming(streaming, showThinking, width), false)
+    if (state.activeTool === "bash" && state.toolOutput) {
+      this.addBlock(concat([dim(`  │ ${state.toolOutput}`)]), false)
+    }
 
     const pending = state.userRequest
     if (pending && state.mode === "waiting_for_user") {

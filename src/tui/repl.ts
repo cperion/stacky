@@ -46,7 +46,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     exitOnCtrlC: true,
     targetFps: 30,
     useMouse: false,
-    onDestroy: () => resolveDone(result),
+    onDestroy: () => {
+      clearInterval(ticker)
+      resolveDone(result)
+    },
   })
 
   await applyTheme(renderer, opts.settings.config.theme)
@@ -230,6 +233,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         ])
       }
     }
+    if (state.activeTool === "bash" && state.toolOutput) {
+      return concat([dim("│ "), dim(tail(state.toolOutput, rendererWidth() - 3))])
+    }
     const streaming = state.streaming
     if (streaming?.active) return streamingLine(streaming, rendererWidth())
     return plain("")
@@ -384,6 +390,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   opts.runtime.bus.on((event) => {
     if (event.type === "state.changed" || event.type === "conversation.added") onState()
   })
+
+  // Elapsed-time feedback: refresh the footer while a turn is in flight.
+  const ticker = setInterval(() => {
+    if (opts.runtime.isRunning) updateFooter(opts.runtime.snapshot())
+  }, 250)
 
   updateFooter(opts.runtime.snapshot())
   renderer.on("resize", () => updateFooter(opts.runtime.snapshot()))

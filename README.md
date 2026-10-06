@@ -120,8 +120,11 @@ is the default voice, and the user's green bar + tint is what marks your turns.
 
 The status bar leads with a compact **state chip** — `READY` (idle at the prompt),
 `PLAN` (framing), `RUN` (executing), `THINK` (streaming reasoning), `WRITE` (streaming
-answer), `TOOL <name>` (running a tool), `WAIT` (needs you) — colour-coded as a
-reverse-video bar so the whole agent state is readable at a glance. Values **wrap**
+answer), `TOOL <name> <elapsed>` (running a tool), `WAIT` (needs you) — and it shows elapsed
+seconds while a phase runs. Each coloured chip uses an **explicit contrasting fg/bg
+pair** (dark text on bright bars, bright-white text on dark bars) so it reads well on
+any theme; `READY`/`IDLE` invert the terminal's own fg/bg. Long command output streams
+live under the prompt while `bash` runs. Values **wrap**
 rather than being clipped, and the panel height grows with the content (collapse it
 with `/dashboard off`). `--ui` can switch to the panes interface.
 

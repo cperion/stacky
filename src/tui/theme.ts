@@ -21,12 +21,19 @@ export type Theme = {
   cyan: RGBA
   dim: RGBA
   gray: RGBA
+  /** Dark text for use on a bright chip bar (black). */
+  onBright: RGBA
+  /** Light text for use on a dark chip bar (bright white). */
+  onDark: RGBA
 }
 
 const DARK_FALLBACK_BG = "#1a1b26"
 const LIGHT_FALLBACK_BG = "#ffffff"
 
-function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "dim" | "gray"> {
+function accents(): Pick<
+  Theme,
+  "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "dim" | "gray" | "onBright" | "onDark"
+> {
   // ANSI palette indices stay themeable in both modes.
   return {
     red: RGBA.fromIndex(1),
@@ -37,6 +44,9 @@ function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" 
     cyan: RGBA.fromIndex(6),
     dim: RGBA.fromIndex(8),
     gray: RGBA.fromIndex(8),
+    // Chip text: black on bright bars, bright white on dark bars.
+    onBright: RGBA.fromIndex(0),
+    onDark: RGBA.fromIndex(15),
   }
 }
 
