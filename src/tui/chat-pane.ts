@@ -9,7 +9,7 @@ import {
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
-import type { AgentState, ConversationEntry, UserRequestRecord } from "../agent/types.ts"
+import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
 import { clampLines, concat, plain, type Part } from "./render.ts"
 
@@ -72,7 +72,7 @@ export class ChatPane {
     this.input.focus()
   }
 
-  update(state: AgentState, selectedChoice: number): void {
+  update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
     const parts: Part[] = []
 
     if (state.conversation.length === 0) {
@@ -80,8 +80,15 @@ export class ChatPane {
     }
 
     for (const entry of state.conversation) {
+      if (entry.role === "thinking" && !showThinking) continue
       if (parts.length > 0) parts.push(plain("\n\n"))
       parts.push(...this.renderEntry(entry))
+    }
+
+    const streaming = state.streaming
+    if (streaming?.active) {
+      if (parts.length > 0) parts.push(plain("\n\n"))
+      parts.push(...this.renderStreaming(streaming, showThinking))
     }
 
     const pending = state.userRequest
@@ -99,6 +106,8 @@ export class ChatPane {
         return [t`${bold(fg(theme.green)("You"))}`, plain("\n"), plain(entry.text)]
       case "agent":
         return [t`${bold(fg(theme.cyan)("Agent"))}`, plain("\n"), plain(entry.text)]
+      case "thinking":
+        return [t`${fg(theme.magenta)("✻ Thinking")}`, plain("\n"), dim(clampLines(entry.text, 40))]
       case "action":
         return [dim(`→ ${entry.text}`)]
       case "observation":
@@ -106,6 +115,26 @@ export class ChatPane {
       case "protocol":
         return [fg(theme.red)(entry.text)]
     }
+  }
+
+  private renderStreaming(streaming: StreamingState, showThinking: boolean): Part[] {
+    const parts: Part[] = []
+    if (streaming.reasoning && showThinking) {
+      parts.push(t`${fg(theme.magenta)("✻ Thinking")} ${dim("…")}`)
+      parts.push(plain("\n"))
+      parts.push(dim(clampLines(streaming.reasoning, 40)))
+      parts.push(plain("\n"))
+    }
+    if (streaming.text) {
+      parts.push(plain(streaming.text))
+      parts.push(plain("\n"))
+    }
+    if (streaming.tool) {
+      parts.push(dim(`→ calling ${streaming.tool}…`))
+    } else if (!streaming.reasoning && !streaming.text) {
+      parts.push(dim("…"))
+    }
+    return parts
   }
 
   private renderChoices(request: UserRequestRecord, selected: number): Part[] {

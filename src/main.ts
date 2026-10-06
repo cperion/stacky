@@ -4,23 +4,26 @@ import { resolve } from "node:path"
 import { AgentRuntime } from "./agent/runtime.ts"
 import { attachSessionAutosave, loadSession } from "./agent/persistence.ts"
 import { attachTraceLogger } from "./agent/logger.ts"
-import { AiSdkClient } from "./llm/ai.ts"
+import { buildLLM } from "./llm/factory.ts"
 import { DemoLLM } from "./llm/scripted.ts"
-import { createModel, type ProviderName } from "./llm/providers.ts"
+import { configPath, loadConfig, saveConfig, type StackyConfig } from "./config.ts"
+import type { ProviderName } from "./llm/providers.ts"
 import { runApp } from "./tui/app.ts"
-import type { LLMClient } from "./llm/client.ts"
+import type { SettingsController } from "./tui/settings.ts"
+import type { ModelInfo } from "./llm/factory.ts"
 
 const { values, positionals } = parseArgs({
   options: {
     mock: { type: "boolean", default: false },
     headless: { type: "boolean", default: false },
-    thinking: { type: "boolean", default: false },
+    thinking: { type: "boolean" },
     provider: { type: "string" },
     model: { type: "string" },
     cwd: { type: "string" },
     task: { type: "string" },
     "file-budget": { type: "string" },
     "conversation-budget": { type: "string" },
+    config: { type: "string" },
     session: { type: "string" },
     trace: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
@@ -34,21 +37,48 @@ if (values.help) {
 }
 
 const cwd = resolve(values.cwd ?? process.cwd())
-const fileBudgetTokens = numberOption(values["file-budget"], 24_000)
-const conversationBudgetTokens = numberOption(values["conversation-budget"], 32_000)
 
-const { llm, providerLabel } = createLLM()
+// Config file first, then CLI overrides.
+const config: StackyConfig = loadConfig(values.config ? resolve(values.config) : configPath())
+if (values.provider) config.provider = values.provider as ProviderName
+if (values.model) config.model = values.model
+if (values.thinking !== undefined) config.thinking = values.thinking
+if (values["file-budget"]) config.fileBudgetTokens = numberOption(values["file-budget"], config.fileBudgetTokens)
+if (values["conversation-budget"])
+  config.conversationBudgetTokens = numberOption(values["conversation-budget"], config.conversationBudgetTokens)
+
+const usingMock = Boolean(values.mock)
+let info: ModelInfo
 
 const runtime = new AgentRuntime({
   cwd,
-  llm,
-  fileBudgetTokens,
-  conversationBudgetTokens,
+  llm: new DemoLLM(),
+  fileBudgetTokens: config.fileBudgetTokens,
+  conversationBudgetTokens: config.conversationBudgetTokens,
 })
 
-if (values.trace) {
-  attachTraceLogger(runtime.bus, resolve(values.trace))
+if (usingMock) {
+  info = {
+    provider: config.provider,
+    modelId: config.model,
+    thinking: config.thinking,
+    hasApiKey: true,
+    toolChoice: "auto",
+    label: "mock/demo",
+  }
+} else {
+  const built = buildLLM({ provider: config.provider, model: config.model, thinking: config.thinking })
+  runtime.setLLM(built.llm)
+  info = built.info
+  if (!info.hasApiKey) {
+    console.error(
+      `No API key for "${config.provider}" (expected ${config.provider.toUpperCase()}_API_KEY).\n` +
+        `Use --mock for the offline demo, or press Ctrl+P in the TUI to choose another model.`,
+    )
+  }
 }
+
+if (values.trace) attachTraceLogger(runtime.bus, resolve(values.trace))
 
 let resumeNote = ""
 if (values.session) {
@@ -60,7 +90,23 @@ if (values.session) {
   attachSessionAutosave(runtime, sessionPath)
 }
 
-const initialTask = values.task ?? positionals[0]
+const configFilePath = values.config ? resolve(values.config) : configPath()
+const settings: SettingsController = {
+  config,
+  configPath: configFilePath,
+  runtime,
+  isMock: usingMock,
+  rebuildModel() {
+    if (usingMock) return
+    runtime.setLLM(buildLLM({ provider: config.provider, model: config.model, thinking: config.thinking }).llm)
+  },
+  persist() {
+    saveConfig(config, configFilePath)
+  },
+}
+
+const positionalTask = positionals[0]
+const initialTask = values.task ?? positionalTask
 
 if (values.headless) {
   if (resumeNote) console.log(resumeNote)
@@ -68,41 +114,10 @@ if (values.headless) {
 } else {
   await runApp({
     runtime,
-    fileBudgetTokens,
-    providerLabel,
+    settings,
+    initialTask,
     ...(resumeNote ? { notice: resumeNote } : {}),
-    ...(initialTask ? { initialTask } : {}),
   })
-}
-
-function createLLM(): { llm: LLMClient; providerLabel: string } {
-  if (values.mock) {
-    return { llm: new DemoLLM(), providerLabel: "mock/demo" }
-  }
-  const provider = values.provider as ProviderName | undefined
-  const spec = createModel({
-    ...(provider ? { provider } : {}),
-    ...(values.model ? { model: values.model } : {}),
-    thinking: Boolean(values.thinking),
-  })
-
-  const hasKey = Boolean(process.env[`${spec.provider.toUpperCase()}_API_KEY`])
-  if (!hasKey) {
-    console.error(
-      `No API key found for provider "${spec.provider}" (expected ${spec.provider.toUpperCase()}_API_KEY).\n` +
-        `Run with --mock for the offline demo, or set the key.`,
-    )
-    process.exit(1)
-  }
-
-  return {
-    llm: new AiSdkClient(spec.model, {
-      ...(spec.toolChoice === "required" ? { temperature: 0 } : {}),
-      toolChoice: spec.toolChoice,
-      ...(spec.providerOptions ? { providerOptions: spec.providerOptions } : {}),
-    }),
-    providerLabel: `${spec.provider}/${spec.modelId}${values.thinking ? " · thinking" : ""}`,
-  }
 }
 
 async function runHeadless(runtime: AgentRuntime, task: string | undefined): Promise<void> {
@@ -136,7 +151,6 @@ async function runHeadless(runtime: AgentRuntime, task: string | undefined): Pro
         console.error(`\nFATAL: ${event.message}`)
         break
     }
-    // Print each observation exactly once.
     if (event.type === "state.changed") return
     const last = state.conversation[state.conversation.length - 1]
     if (last && last.role === "observation" && !seen.has(last.id)) {
@@ -146,7 +160,7 @@ async function runHeadless(runtime: AgentRuntime, task: string | undefined): Pro
   })
 
   if (!task) {
-    console.error("Headless mode requires a task: pass --task \"...\" or a positional task string.")
+    console.error('Headless mode requires a task: pass --task "..." or a positional task string.')
     process.exit(1)
   }
 
@@ -185,17 +199,22 @@ Options:
   --cwd <path>             Workspace root (default: current directory)
   --file-budget <tokens>   File working-set token budget (default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
+  --config <path>          Config file (default: ${configPath()})
   --session <path>         Persist/restore task state (JSON). File contents are never stored.
   --trace <path>           Append a JSONL execution trace
   -h, --help               Show this help
 
 Environment:
-  OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY
-  STACKY_PROVIDER, STACKY_MODEL
+  DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
+  STACKY_PROVIDER, STACKY_MODEL, STACKY_CONFIG
 
-Keys (TUI):
-  Enter       send message / choose highlighted option
-  ↑ / ↓       move between choices when the agent asks a question
+Keys (TUI, vim-style):
+  Enter       send message / activate menu item / select choice
+  j / k       move down / up (choices, menus)
+  h / l       back / forward (menus); l selects a choice
+  g / G       jump to top / bottom of a menu
+  Esc         close the menu, or clear a half-typed message
+  Ctrl+P      model, thinking and settings menu
   Ctrl+T      toggle closed-frame history in the task pane
   Ctrl+C      quit
 

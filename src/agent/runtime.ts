@@ -6,6 +6,7 @@ import type {
   ClosedFrame,
   Metrics,
   SessionSnapshot,
+  StreamingState,
   UserRequestRecord,
 } from "./types.ts"
 import { TaskStack } from "../stack/stack.ts"
@@ -13,7 +14,7 @@ import { ConversationBuffer } from "./conversation.ts"
 import { FileWorkingSet } from "../files/lru.ts"
 import { EventBus, type RuntimeEvent } from "./events.ts"
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
-import { ProtocolError, type LLMClient, type ModelInput } from "../llm/client.ts"
+import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } from "../llm/client.ts"
 import { createMetrics } from "./metrics.ts"
 import { runBash } from "../tools/bash.ts"
 import { runRead } from "../tools/read.ts"
@@ -58,6 +59,7 @@ export class AgentRuntime {
   private observation = ""
   private running = false
   private protocolErrors = 0
+  private streaming?: StreamingState
 
   private readonly maxProtocolErrors: number
   private readonly maxStepsPerRun: number
@@ -82,6 +84,50 @@ export class AgentRuntime {
     return this.mode === "waiting_for_user"
   }
 
+  get llmLabel(): string {
+    return this.llm.label
+  }
+
+  get isStreaming(): boolean {
+    return this.streaming?.active === true
+  }
+
+  /** Swap the model. Only allowed while idle, so a turn is never interrupted. */
+  setLLM(llm: LLMClient): void {
+    if (this.running) throw new Error("Cannot switch models while the agent is running.")
+    this.llm = llm
+    this.emitState()
+  }
+
+  /** Update context budgets at runtime (the config menu uses this). */
+  setBudgets(budgets: { fileBudgetTokens?: number; conversationBudgetTokens?: number }): string[] {
+    let evicted: string[] = []
+    if (budgets.fileBudgetTokens !== undefined) {
+      evicted = this.files.setBudget(budgets.fileBudgetTokens)
+      for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
+    }
+    if (budgets.conversationBudgetTokens !== undefined) {
+      this.conversation.setBudget(budgets.conversationBudgetTokens)
+    }
+    this.emitState()
+    return evicted
+  }
+
+  /** Clear task state, history and the working set. Keeps the model and metrics. */
+  reset(): void {
+    if (this.running) throw new Error("Cannot reset while the agent is running.")
+    this.stack.clear()
+    this.conversation.clear()
+    this.files.clear()
+    this.closedFrames = []
+    this.userRequest = undefined
+    this.observation = ""
+    this.streaming = undefined
+    this.protocolErrors = 0
+    this.mode = "push"
+    this.emitState()
+  }
+
   snapshot(): AgentState {
     return {
       mode: this.mode,
@@ -91,6 +137,7 @@ export class AgentRuntime {
       files: this.files.list(),
       userRequest: this.userRequest,
       metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
+      ...(this.streaming ? { streaming: { ...this.streaming } } : {}),
     }
   }
 
@@ -107,6 +154,13 @@ export class AgentRuntime {
     }
   }
 
+  /** Surface an out-of-band error to the conversation without changing mode. */
+  notify(message: string): void {
+    this.conversation.add("protocol", message)
+    this.bus.emit({ type: "fatal", message })
+    this.emitState()
+  }
+
   /**
    * Restore a persisted session. File contents are re-materialized from disk
    * on the next inference, so a restart cannot resurrect stale code.
@@ -117,6 +171,7 @@ export class AgentRuntime {
     this.closedFrames = [...(data.closedFrames ?? [])]
     this.files.restore(data.filePaths ?? [])
     this.observation = ""
+    this.streaming = undefined
     this.userRequest = data.userRequest
     if (data.metrics) Object.assign(this.metrics, data.metrics, { outcomes: { ...data.metrics.outcomes } })
 
@@ -197,6 +252,7 @@ export class AgentRuntime {
         fileBudgetTokens: this.files.budgetTokens,
         fileUsedTokens: this.files.totalTokens(),
         observation: this.observation,
+        ...(this.userRequest ? { userRequest: this.userRequest } : {}),
       }),
       allowedTools,
       mode: this.mode,
@@ -204,31 +260,76 @@ export class AgentRuntime {
 
     this.metrics.llmCalls += 1
     this.bus.emit({ type: "model.call.started", mode: this.mode })
+
+    this.streaming = { active: true, reasoning: "", text: "", startedAt: Date.now() }
+    this.emitState()
+
+    const handlers: StreamHandlers = {
+      onReasoningDelta: (delta) => {
+        if (!this.streaming) return
+        if (!this.streaming.reasoningStartedAt) this.streaming.reasoningStartedAt = Date.now()
+        this.streaming.reasoning += delta
+        this.emitState()
+      },
+      onTextDelta: (delta) => {
+        if (!this.streaming) return
+        if (!this.streaming.textStartedAt) this.streaming.textStartedAt = Date.now()
+        this.streaming.text += delta
+        this.emitState()
+      },
+      onToolStart: (tool) => {
+        if (!this.streaming) return
+        this.streaming.tool = tool
+        this.emitState()
+      },
+    }
+
+    let action: ModelAction | undefined
+    let failure: unknown
     try {
-      const action = await this.llm.step(input)
+      action = await this.llm.step(input, handlers)
+    } catch (error) {
+      failure = error
+    }
+
+    // Move any streamed reasoning into the conversation regardless of outcome.
+    const reasoning = this.takeStreamedReasoning()
+    if (reasoning) this.conversation.add("thinking", reasoning)
+    this.emitState()
+
+    if (!failure && action) {
       this.bus.emit({ type: "model.call.finished", tool: action.tool })
       return { kind: "action", action }
-    } catch (error) {
-      if (error instanceof ProtocolError) {
-        this.protocolErrors += 1
-        this.metrics.protocolErrors += 1
-        const message = `PROTOCOL ERROR: ${error.message}`
-        this.observation = message
-        this.conversation.add("protocol", message)
-        this.bus.emit({ type: "protocol.error", message: error.message })
-        this.emitState()
-
-        if (this.protocolErrors > this.maxProtocolErrors) {
-          this.fail(
-            `The model failed to produce a valid tool call ${this.protocolErrors} times in a row. Last error: ${error.message}`,
-          )
-          return { kind: "stop" }
-        }
-        return { kind: "continue" }
-      }
-      this.fail(error instanceof Error ? error.message : String(error))
-      return { kind: "stop" }
     }
+
+    const error = failure
+    if (error instanceof ProtocolError) {
+      this.protocolErrors += 1
+      this.metrics.protocolErrors += 1
+      const message = `PROTOCOL ERROR: ${error.message}`
+      this.observation = message
+      this.conversation.add("protocol", message)
+      this.bus.emit({ type: "protocol.error", message: error.message })
+      this.emitState()
+
+      if (this.protocolErrors > this.maxProtocolErrors) {
+        this.fail(
+          `The model failed to produce a valid tool call ${this.protocolErrors} times in a row. Last error: ${error.message}`,
+        )
+        return { kind: "stop" }
+      }
+      return { kind: "continue" }
+    }
+
+    this.fail(error instanceof Error ? error.message : String(error))
+    return { kind: "stop" }
+  }
+
+  /** Clear the live stream buffer and return any reasoning it captured. */
+  private takeStreamedReasoning(): string | undefined {
+    const reasoning = this.streaming?.reasoning.trim()
+    this.streaming = undefined
+    return reasoning && reasoning.length > 0 ? reasoning : undefined
   }
 
   private allowedTools(): ToolName[] {

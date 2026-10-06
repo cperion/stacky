@@ -4,15 +4,21 @@ import type { AgentState } from "../agent/types.ts"
 import { TaskPane } from "./task-pane.ts"
 import { ChatPane } from "./chat-pane.ts"
 import { FilePane } from "./file-pane.ts"
+import { MenuOverlay } from "./menu.ts"
+import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { theme } from "./theme.ts"
+import type { SettingsController } from "./settings.ts"
 
 export type AppOptions = {
   runtime: AgentRuntime
-  fileBudgetTokens: number
-  providerLabel: string
+  settings: SettingsController
   initialTask?: string
   notice?: string
 }
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+const RENDER_INTERVAL_MS = 33
+const SPINNER_INTERVAL_MS = 90
 
 export async function runApp(opts: AppOptions): Promise<void> {
   let resolveDone: () => void = () => {}
@@ -23,46 +29,91 @@ export async function runApp(opts: AppOptions): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     targetFps: 30,
-    onDestroy: () => resolveDone(),
+    onDestroy: () => {
+      clearInterval(spinnerTimer)
+      resolveDone()
+    },
   })
 
-  const outer = new BoxRenderable(renderer, {
-    width: "100%",
-    height: "100%",
-    flexDirection: "column",
-  })
-  const main = new BoxRenderable(renderer, {
-    width: "100%",
-    flexGrow: 1,
-    flexDirection: "row",
-    gap: 1,
-  })
+  const outer = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column" })
+  const main = new BoxRenderable(renderer, { width: "100%", flexGrow: 1, flexDirection: "row", gap: 1 })
 
   const taskPane = new TaskPane(renderer, { width: "26%" })
   let selectedChoice = 0
-  const chatPane = new ChatPane(renderer, {
-    onSubmit: (text) => handleSubmit(text),
-  })
-  const filePane = new FilePane(renderer, { width: "26%", budgetTokens: opts.fileBudgetTokens })
-
+  const chatPane = new ChatPane(renderer, { onSubmit: (text) => handleSubmit(text) })
+  const filePane = new FilePane(renderer, { width: "26%" })
   const footer = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "none" })
+  const menu = new MenuOverlay(renderer, { width: "62%" })
 
   main.add(taskPane.box)
   main.add(chatPane.box)
   main.add(filePane.box)
   outer.add(main)
   outer.add(footer)
+  outer.add(menu.box)
   renderer.root.add(outer)
 
   let showHistory = false
+  let spin = 0
+
+  // --- rendering -------------------------------------------------------------
 
   const render = () => {
     const state = opts.runtime.snapshot()
     taskPane.update(state, showHistory)
-    chatPane.update(state, selectedChoice)
-    filePane.update(state)
-    footer.content = renderFooter(state, opts.providerLabel, showHistory, opts.notice)
+    chatPane.update(state, selectedChoice, opts.settings.config.showThinking)
+    filePane.update(state, opts.settings.config.fileBudgetTokens)
+    footer.content = renderFooter(state, {
+      label: opts.runtime.llmLabel,
+      thinking: opts.settings.config.thinking,
+      showHistory,
+      notice: opts.notice,
+      spinner: SPINNER[spin % SPINNER.length] ?? "…",
+    })
   }
+
+  let renderPending = false
+  const requestRender = () => {
+    if (renderPending) return
+    renderPending = true
+    setTimeout(() => {
+      renderPending = false
+      render()
+    }, RENDER_INTERVAL_MS)
+  }
+
+  const spinnerTimer = setInterval(() => {
+    const state = opts.runtime.snapshot()
+    if (state.streaming?.active || state.mode === "execute") {
+      spin += 1
+      requestRender()
+    }
+  }, SPINNER_INTERVAL_MS)
+
+  // --- menu ------------------------------------------------------------------
+
+  const menuContext: MenuContext = {
+    ...opts.settings,
+    close: () => setMenuOpen(false),
+    resetSession: () => {
+      opts.runtime.reset()
+      selectedChoice = 0
+    },
+    quit: () => renderer.destroy(),
+  }
+
+  function setMenuOpen(open: boolean): void {
+    if (open) {
+      menu.open("Settings", buildSettingsMenu(menuContext))
+      chatPane.input.blur()
+    } else {
+      menu.close()
+      chatPane.focus()
+    }
+    render()
+  }
+
+  // --- input -----------------------------------------------------------------
 
   const preferredIndex = (): number => {
     const request = opts.runtime.snapshot().userRequest
@@ -84,7 +135,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
       await opts.runtime.request(text)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      opts.runtime.bus.emit({ type: "fatal", message })
+      opts.runtime.notify(message)
     }
     render()
   }
@@ -110,21 +161,79 @@ export async function runApp(opts: AppOptions): Promise<void> {
     void submit(text)
   }
 
-  renderer.keyInput.on("keypress", (key) => {
-    const snapshot = opts.runtime.snapshot()
-    const choiceActive =
-      snapshot.mode === "waiting_for_user" && (snapshot.userRequest?.choices?.length ?? 0) > 0
-
-    // Arrows only mean something while a choice prompt is on screen. Otherwise
-    // they belong to the chat input.
-    if (choiceActive && key.name === "up") {
-      moveChoice(-1)
+  renderer.keyInput.on("keypress", async (key) => {
+    // While the menu is open it owns the keyboard. Vim motions apply here.
+    if (menu.isOpen) {
       key.preventDefault()
       key.stopPropagation()
+      const name = key.name
+      const activate = name === "l" || name === "return" || name === "enter" || name === "kpenter" || name === "linefeed" || name === "right"
+      const backward = name === "h" || name === "left"
+
+      if (name === "escape" || (key.ctrl && name === "p")) {
+        setMenuOpen(false)
+        return
+      }
+      if (name === "j" || name === "down") {
+        menu.move(1)
+        return
+      }
+      if (name === "k" || name === "up") {
+        menu.move(-1)
+        return
+      }
+      if (name === "g" && key.shift) {
+        menu.toBottom()
+        return
+      }
+      if (name === "g") {
+        menu.toTop()
+        return
+      }
+      if (activate) {
+        await menu.activate()
+        if (!menu.isOpen) chatPane.focus()
+        render()
+        return
+      }
+      if (backward) {
+        menu.back()
+        if (!menu.isOpen) chatPane.focus()
+        render()
+        return
+      }
       return
     }
-    if (choiceActive && key.name === "down") {
-      moveChoice(1)
+
+    const snapshot = opts.runtime.snapshot()
+    const choiceActive = snapshot.mode === "waiting_for_user" && (snapshot.userRequest?.choices?.length ?? 0) > 0
+    const inputEmpty = chatPane.input.value.length === 0
+
+    // Vim motions drive the choice list while the chat input is empty; once the
+    // user starts typing, characters belong to the input (freeform replies).
+    if (choiceActive && inputEmpty) {
+      if (key.name === "j" || key.name === "down") {
+        moveChoice(1)
+        key.preventDefault()
+        key.stopPropagation()
+        return
+      }
+      if (key.name === "k" || key.name === "up") {
+        moveChoice(-1)
+        key.preventDefault()
+        key.stopPropagation()
+        return
+      }
+      if (key.name === "l") {
+        handleSubmit("")
+        key.preventDefault()
+        key.stopPropagation()
+        return
+      }
+    }
+
+    if (key.ctrl && key.name === "p") {
+      setMenuOpen(true)
       key.preventDefault()
       key.stopPropagation()
       return
@@ -136,22 +245,25 @@ export async function runApp(opts: AppOptions): Promise<void> {
       key.preventDefault()
       key.stopPropagation()
       render()
+      return
+    }
+
+    // Escape clears a half-typed message (there is no other modal open).
+    if (key.name === "escape" && chatPane.input.value.length > 0) {
+      chatPane.input.value = ""
+      key.preventDefault()
+      key.stopPropagation()
+      render()
     }
   })
 
   opts.runtime.bus.on((event) => {
-    if (event.type === "state.changed") render()
-    else if (event.type === "user.request") {
+    if (event.type === "user.request") {
       selectedChoice = preferredIndex()
-      render()
-    } else if (
-      event.type === "frame.pushed" ||
-      event.type === "frame.popped" ||
-      event.type === "file.promoted" ||
-      event.type === "file.evicted"
-    ) {
-      render()
+      requestRender()
+      return
     }
+    requestRender()
   })
 
   render()
@@ -166,19 +278,32 @@ export async function runApp(opts: AppOptions): Promise<void> {
 
 function renderFooter(
   state: AgentState,
-  providerLabel: string,
-  showHistory: boolean,
-  notice: string | undefined,
+  opts: {
+    label: string
+    thinking: boolean
+    showHistory: boolean
+    notice: string | undefined
+    spinner: string
+  },
 ): string {
-  if (notice && state.conversation.length === 0) return ` ${notice}`
+  if (opts.notice && state.conversation.length === 0) return ` ${opts.notice}`
 
-  const hint =
-    state.mode === "waiting_for_user"
-      ? "waiting for you · ↑/↓ choose · Enter select · or type a reply"
-      : state.mode === "push"
-        ? "type a task · ctrl+t history · ctrl+c quit"
-        : "working… · ctrl+c quit"
+  const busy = state.streaming?.active === true
+  const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
+  const thinkingFlag = opts.thinking ? " · thinking" : ""
   const m = state.metrics
-  const stats = `llm ${m.llmCalls} · tools ${m.toolCalls} · files ${state.files.length} · depth ${state.stack.length}`
-  return ` ${state.mode.toUpperCase()} · ${providerLabel} · ${stats} · ${hint}${showHistory ? " · history shown" : ""}`
+  const stats = `llm ${m.llmCalls} · tools ${m.toolCalls} · depth ${state.stack.length}`
+  const history = opts.showHistory ? " · history" : ""
+  return ` ${state.mode.toUpperCase()} · ${opts.label}${thinkingFlag} · ${stats} · ${status}${history}`
+}
+
+function statusHint(state: AgentState): string {
+  switch (state.mode) {
+    case "waiting_for_user":
+      return "waiting for you · j/k choose · l/Enter select"
+    case "push":
+      return "type a task · Ctrl+P settings · Ctrl+T history · Ctrl+C quit"
+    default:
+      return "working… · Ctrl+C quit"
+  }
 }

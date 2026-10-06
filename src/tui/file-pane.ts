@@ -16,10 +16,8 @@ export class FilePane {
   readonly box: BoxRenderable
   private scroll: ScrollBoxRenderable
   private text: TextRenderable
-  private budgetTokens: number
 
-  constructor(renderer: CliRenderer, opts: { width: Dimension; budgetTokens: number }) {
-    this.budgetTokens = opts.budgetTokens
+  constructor(renderer: CliRenderer, opts: { width: Dimension }) {
     this.box = new BoxRenderable(renderer, {
       width: opts.width,
       height: "100%",
@@ -48,13 +46,13 @@ export class FilePane {
     this.box.add(this.scroll)
   }
 
-  update(state: AgentState): void {
+  update(state: AgentState, budgetTokens: number): void {
     const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
-    const ratio = this.budgetTokens > 0 ? used / this.budgetTokens : 0
+    const ratio = budgetTokens > 0 ? used / budgetTokens : 0
     const pressureColor = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.green
 
     const parts: Part[] = [
-      t`${bold("TOKENS")} ${formatTokens(used)} / ${formatTokens(this.budgetTokens)} ${dim(`(${Math.round(ratio * 100)}%)`)}`,
+      t`${bold("TOKENS")} ${formatTokens(used)} / ${formatTokens(budgetTokens)} ${dim(`(${Math.round(ratio * 100)}%)`)}`,
       plain("\n"),
       t`${fg(pressureColor)(progressBar(ratio))}`,
       plain("\n\n"),

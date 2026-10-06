@@ -92,6 +92,7 @@ export type ConversationRole =
   | "agent"
   | "action"
   | "observation"
+  | "thinking"
   | "protocol"
 
 export type ConversationEntry = {
@@ -102,6 +103,16 @@ export type ConversationEntry = {
   tokens: number
 }
 
+export type StreamingState = {
+  active: boolean
+  reasoning: string
+  text: string
+  tool?: string
+  startedAt: number
+  reasoningStartedAt?: number
+  textStartedAt?: number
+}
+
 export type AgentState = {
   mode: AgentMode
   conversation: ConversationEntry[]
@@ -110,6 +121,7 @@ export type AgentState = {
   files: FileEntry[]
   userRequest?: UserRequestRecord
   metrics: Metrics
+  streaming?: StreamingState
 }
 
 export type Metrics = {

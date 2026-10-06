@@ -16,6 +16,11 @@ export class ConversationBuffer {
 
   constructor(private budgetTokens = 32_000) {}
 
+  setBudget(tokens: number): void {
+    this.budgetTokens = tokens
+    this.evict()
+  }
+
   get length(): number {
     return this.items.length
   }

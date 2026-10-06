@@ -54,10 +54,60 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 
 | Key | Action |
 | --- | --- |
-| `Enter` | send a message / choose the highlighted option |
-| `↑` / `↓` | move between choices when the agent asks a question |
+| `Enter` | send a message / activate the highlighted item / select a choice |
+| `j` / `k` | move down / up through choices and menus |
+| `h` / `l` | back / forward in menus; `l` selects a choice |
+| `g` / `G` | jump to the top / bottom of a menu |
+| `Esc` | close the menu, or clear a half-typed message |
+| `Ctrl+P` | model, thinking and settings menu |
 | `Ctrl+T` | toggle closed-frame history in the task pane |
 | `Ctrl+C` | quit |
+
+The TUI is vim-flavoured: `hjkl` drives every list and menu. While the chat
+input has text, `j`/`k` are ordinary characters, so freeform replies still work;
+the vim motions engage for the choice list only when the input is empty.
+
+## Streaming & thinking
+
+The model is called with `streamText`, so the UI updates as the model works:
+
+- **Thinking** — reasoning deltas render live in a `✻ Thinking` block. When the turn
+  finishes, the reasoning is kept as a `thinking` conversation entry and shown in the
+  transcript. Thinking entries are **never** sent back to the model, so they cannot
+  pollute the prompt.
+- **Text** — any assistant text streams live, but is not persisted (the contract is
+  tool-only output).
+- **Tool calls** — `→ calling <tool>…` appears the moment the model starts emitting
+  the call, before it is executed.
+- A spinner and elapsed status appear in the footer while a turn is in flight;
+  rendering is throttled so token streams stay smooth.
+
+## Settings, models and config
+
+Press `Ctrl+P` for the settings menu (vim keys: `j`/`k` move, `l`/Enter select,
+`h` back, `g`/`G` jump, `Esc` close):
+
+```
+Settings
+❯ Model              deepseek/deepseek-flash  ›
+  Thinking           off
+  Show thinking      on
+  ── Context ──
+  File budget        24000
+  Conversation budget 32000
+  ── Session ──
+  Reset session
+  Quit
+```
+
+The **Model** submenu lists every catalogued model across providers; selecting one
+rebuilds the LLM client immediately. `Thinking` maps to the provider-agnostic
+`reasoning` setting (`'none'` vs `'provider-default'`); DeepSeek V4 models think by
+default, so it is disabled explicitly unless you turn it on.
+
+Settings persist to `${XDG_CONFIG_HOME:-~/.config}/stacky/config.json` (override with
+`STACKY_CONFIG` or `--config`). Only paths and preferences are stored — never file
+contents.
 
 ## CLI
 
@@ -73,6 +123,7 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 --conversation-budget <t>  conversation budget (default 32000)
 --session <path>           persist/restore task state as JSON
 --trace <path>             append a JSONL execution trace
+--config <path>            settings file (default: ~/.config/stacky/config.json)
 -h, --help                 help
 ```
 
@@ -90,9 +141,10 @@ both light and dark backgrounds. It never hardcodes RGB colours.
 ```
 src/
 ├── main.ts                 CLI + provider wiring
+├── config.ts               settings persistence (~/.config/stacky/config.json)
 ├── agent/
-│   ├── types.ts            TaskFrame, ClosedFrame, UserRequest, AgentState, Metrics
-│   ├── runtime.ts          the state machine: loop, dispatch, mode rules, metrics
+│   ├── types.ts            TaskFrame, ClosedFrame, UserRequest, AgentState, StreamingState
+│   ├── runtime.ts          the state machine: loop, dispatch, mode rules, streaming, metrics
 │   ├── prompt.ts           system rules + prompt assembly (conversation/stack/files/event)
 │   ├── conversation.ts     bounded raw history (no summaries)
 │   ├── events.ts           event bus between runtime and UI
@@ -107,13 +159,18 @@ src/
 ├── tools/
 │   ├── bash.ts  read.ts  edit.ts
 ├── llm/
-│   ├── client.ts           narrow LLMClient interface
-│   ├── ai.ts               Vercel AI SDK adapter (toolChoice: required, 1 step)
+│   ├── client.ts           narrow LLMClient interface + stream handlers
+│   ├── ai.ts               Vercel AI SDK adapter (streamText, toolChoice, reasoning)
 │   ├── tools.ts            AI SDK tool defs (no execute — the runtime executes)
-│   ├── providers.ts        openai/anthropic/deepseek
+│   ├── providers.ts        openai/anthropic/deepseek model creation
+│   ├── catalog.ts          selectable model ids per provider
+│   ├── factory.ts          config -> LLM client + model info
 │   └── scripted.ts         ScriptedLLM (tests) + DemoLLM (--mock)
 └── tui/
     ├── app.ts  task-pane.ts  chat-pane.ts  file-pane.ts  theme.ts  render.ts
+    ├── menu.ts             modal menu overlay (vim keys)
+    ├── menus.ts            settings / model / thinking / config menus
+    └── settings.ts         shared SettingsController type
 ```
 
 Note: the loop is implemented inside `runtime.ts` rather than a separate `loop.ts`.
@@ -138,7 +195,7 @@ Note: the loop is implemented inside `runtime.ts` rather than a separate `loop.t
 ## Development
 
 ```bash
-bun test          # 19 tests: stack, file LRU, runtime, persistence, metrics
+bun test          # 29 tests: stack, file LRU, runtime, persistence, streaming, config, metrics
 bunx tsc --noEmit # strict typecheck
 ```
 

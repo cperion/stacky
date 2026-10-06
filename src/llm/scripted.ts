@@ -1,10 +1,11 @@
 import type { ModelAction } from "../stack/schemas.ts"
-import { ProtocolError, type LLMClient, type ModelInput } from "./client.ts"
+import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } from "./client.ts"
 
-export type ScriptStep = ModelAction | ((input: ModelInput) => ModelAction | Promise<ModelAction>)
+export type ScriptStep = ModelAction | ((input: ModelInput, handlers?: StreamHandlers) => ModelAction | Promise<ModelAction>)
 
 /** Deterministic LLM used for tests and the offline `--mock` demo. */
 export class ScriptedLLM implements LLMClient {
+  readonly label: string
   private index = 0
 
   constructor(
@@ -12,31 +13,41 @@ export class ScriptedLLM implements LLMClient {
     private onExhausted: () => ModelAction = () => {
       throw new ProtocolError("Scripted LLM ran out of steps.")
     },
-  ) {}
+    label = "scripted",
+  ) {
+    this.label = label
+  }
 
   get remaining(): number {
     return this.steps.length - this.index
   }
 
-  async step(input: ModelInput): Promise<ModelAction> {
+  async step(input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction> {
     const step = this.steps[this.index]
     this.index += 1
     if (!step) return this.onExhausted()
-    return typeof step === "function" ? step(input) : step
+    return typeof step === "function" ? step(input, handlers) : step
   }
 }
 
 /**
  * A small scripted demo that exercises the whole machine offline:
  * push -> bash -> read -> user(required with choices) -> bash -> pop -> user(none).
+ * Emits reasoning deltas so the thinking display can be seen without an API key.
  */
 export class DemoLLM implements LLMClient {
+  readonly label = "mock/demo"
   private cursor = 0
 
-  async step(_input: ModelInput): Promise<ModelAction> {
+  async step(_input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction> {
     this.cursor += 1
     switch (this.cursor) {
       case 1:
+        stream(handlers, [
+          "The user greeted me or asked for a survey. ",
+          "I should establish a frame before inspecting anything. ",
+          "Scope: survey the repository without modifying it.",
+        ])
         return {
           tool: "push",
           input: {
@@ -54,6 +65,11 @@ export class DemoLLM implements LLMClient {
       case 3:
         return { tool: "read", input: { path: "package.json" } }
       case 4:
+        stream(handlers, [
+          "I have the repository layout. ",
+          "The survey frame is satisfied. ",
+          "I need a product decision before continuing, so I will ask the user with choices.",
+        ])
         return {
           tool: "user",
           input: {
@@ -94,4 +110,9 @@ export class DemoLLM implements LLMClient {
         throw new ProtocolError("Demo script complete.")
     }
   }
+}
+
+function stream(handlers: StreamHandlers | undefined, chunks: string[]): void {
+  for (const chunk of chunks) handlers?.onReasoningDelta?.(chunk)
+  handlers?.onTextDelta?.("")
 }

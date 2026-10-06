@@ -1,4 +1,4 @@
-import type { AgentMode, ConversationEntry, MaterializedFile, TaskFrame } from "./types.ts"
+import type { AgentMode, ConversationEntry, MaterializedFile, TaskFrame, UserRequestRecord } from "./types.ts"
 import type { ToolName } from "../stack/schemas.ts"
 import { TOOL_DESCRIPTIONS } from "../llm/tools.ts"
 
@@ -46,12 +46,14 @@ export type PromptInput = {
   fileBudgetTokens: number
   fileUsedTokens: number
   observation: string
+  userRequest?: UserRequestRecord
 }
 
 export function buildUserPrompt(input: PromptInput): string {
   const sections: string[] = []
 
   sections.push(renderConversation(input.conversation))
+  if (input.userRequest) sections.push(renderUserRequest(input.userRequest))
   sections.push(renderStack(input.stack, input.mode))
   sections.push(renderFiles(input.files, input.fileUsedTokens, input.fileBudgetTokens))
   if (input.observation.trim().length > 0) {
@@ -63,9 +65,29 @@ export function buildUserPrompt(input: PromptInput): string {
 }
 
 function renderConversation(entries: readonly ConversationEntry[]): string {
-  if (entries.length === 0) return "# CONVERSATION\n(empty)"
-  const lines = entries.map((entry) => `[${entry.role}] ${entry.text}`)
-  return `# CONVERSATION (${entries.length} entries)\n${lines.join("\n")}`
+  const visible = entries.filter((entry) => entry.role !== "thinking")
+  if (visible.length === 0) return "# CONVERSATION\n(empty)"
+  const lines = visible.map((entry) => `[${entry.role}] ${entry.text}`)
+  return `# CONVERSATION (${visible.length} entries)\n${lines.join("\n")}`
+}
+
+function renderUserRequest(request: UserRequestRecord): string {
+  const lines: string[] = ["# PENDING USER REQUEST"]
+  lines.push(`Question: ${request.message}`)
+  lines.push(`Response mode: ${request.response}`)
+  if (request.choices && request.choices.length > 0) {
+    lines.push("Choices:")
+    for (const choice of request.choices) {
+      const recommended = request.preferredChoice?.id === choice.id ? " [recommended]" : ""
+      lines.push(`- ${choice.id}: ${choice.label}${recommended}`)
+    }
+  }
+  if (request.resolved) {
+    lines.push(`Status: RESOLVED — the human answered: ${request.answer ?? "(no answer recorded)"}`)
+  } else {
+    lines.push("Status: UNRESOLVED — the human has not answered yet.")
+  }
+  return lines.join("\n")
 }
 
 function renderStack(stack: readonly TaskFrame[], mode: AgentMode): string {

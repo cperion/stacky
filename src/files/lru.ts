@@ -30,7 +30,7 @@ export class FileWorkingSet {
   private clock = 0
   private stableCounter = 0
   readonly cwd: string
-  readonly budgetTokens: number
+  budgetTokens: number
   readonly maxFileBytes: number
 
   constructor(opts: FileWorkingSetOptions) {
@@ -81,6 +81,12 @@ export class FileWorkingSet {
 
   remove(path: string): boolean {
     return this.entries.delete(relativePath(this.cwd, path))
+  }
+
+  /** Change the token budget and evict down to it. Returns evicted paths. */
+  setBudget(tokens: number): string[] {
+    this.budgetTokens = tokens
+    return this.evict("")
   }
 
   clear(): void {
