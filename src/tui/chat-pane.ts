@@ -12,7 +12,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, chatPaneInner, clampLines, concat, header, paneRule, plain, type Part } from "./render.ts"
+import { block, chatPaneInner, clampLines, concat, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -121,12 +121,31 @@ export class ChatPane {
           italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
         ]
       case "action":
-        return [dim(block(entry.text, width, 2, "→"))]
+        return this.renderAction(entry.text, width)
       case "observation":
         return [dim(block(clampLines(entry.text, 16), width, 2, "│"))]
       case "protocol":
         return [fg(theme.red)(block(entry.text, width, 2, "✗"))]
     }
+  }
+
+  /** Tool calls are the agent's actions: render them prominently, args subordinate. */
+  private renderAction(text: string, width: number): Part[] {
+    const paren = text.indexOf("(")
+    const tool = paren >= 0 ? text.slice(0, paren) : text
+    const args = paren >= 0 ? text.slice(paren) : ""
+    const prefix = "  → "
+    const hanging = prefix.length + tool.length + 2
+    const argLines = wrapRaw(args, Math.max(8, width - hanging))
+
+    const parts: Part[] = [
+      concat([fg(theme.blue)(prefix), bold(fg(theme.blue)(tool)), plain("  "), dim(argLines[0] ?? "")]),
+    ]
+    for (const line of argLines.slice(1)) {
+      parts.push(plain(`\n${" ".repeat(hanging)}`))
+      parts.push(dim(line))
+    }
+    return parts
   }
 
   private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): Part[] {
@@ -145,7 +164,7 @@ export class ChatPane {
       parts.push(plain("\n"))
     }
     if (streaming.tool) {
-      parts.push(dim(`  → calling ${streaming.tool}…`))
+      parts.push(concat([fg(theme.blue)("  → "), bold(fg(theme.blue)(streaming.tool)), dim("  running…")]))
     } else if (!streaming.reasoning && !streaming.text) {
       parts.push(dim("  …"))
     }
