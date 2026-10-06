@@ -42,6 +42,8 @@ export function describeToolCall(tool: string, input: unknown): string {
     }
     case "push":
       return firstLine(text(args.why) ?? "new task frame")
+    case "spawn":
+      return firstLine(text(args.why) ?? "sub-task")
     case "pop": {
       const outcome = text(args.outcome) ?? "closed"
       const why = firstLine(text(args.whyClosed) ?? "")

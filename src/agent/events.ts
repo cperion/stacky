@@ -1,4 +1,4 @@
-import type { ClosedFrame, TaskFrame, UserRequestRecord } from "./types.ts"
+import type { ClosedFrame, ConversationEntry, TaskFrame, UserRequestRecord } from "./types.ts"
 
 export type RuntimeEvent =
   | { type: "model.call.started"; mode: string }
@@ -12,6 +12,9 @@ export type RuntimeEvent =
   | { type: "file.evicted"; path: string }
   | { type: "user.request"; request: UserRequestRecord }
   | { type: "user.resolved"; request: UserRequestRecord }
+  | { type: "conversation.added"; entry: ConversationEntry }
+  | { type: "subagent.started"; depth: number; frame: TaskFrame }
+  | { type: "subagent.finished"; depth: number; report: string }
   | { type: "protocol.error"; message: string }
   | { type: "state.changed" }
   | { type: "fatal"; message: string }

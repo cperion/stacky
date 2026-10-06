@@ -31,12 +31,18 @@ export type AgentRuntimeOptions = {
   maxProtocolErrors?: number
   maxStepsPerRun?: number
   maxStackDepth?: number
+  /** Nesting level: 0 for the top-level agent, 1+ for subagents. */
+  depth?: number
+  /** How deep subagents may nest. */
+  maxDepth?: number
+  /** Subagents may not ask the human a question; they report instead. */
+  allowUser?: boolean
 }
 
 const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
   // Planning is separate from execution: establish a frame before inspecting or changing anything.
   push: ["push", "user"],
-  execute: ["bash", "read", "edit", "push", "pop", "user"],
+  execute: ["bash", "read", "edit", "push", "pop", "spawn", "user"],
   waiting_for_user: [],
 }
 
@@ -67,6 +73,10 @@ export class AgentRuntime {
   private readonly maxProtocolErrors: number
   private readonly maxStepsPerRun: number
   private readonly maxStackDepth: number
+  readonly depth: number
+  private readonly maxDepth: number
+  private readonly allowUser: boolean
+  private report?: string
 
   constructor(opts: AgentRuntimeOptions) {
     this.cwd = opts.cwd
@@ -77,6 +87,9 @@ export class AgentRuntime {
     this.maxProtocolErrors = opts.maxProtocolErrors ?? 3
     this.maxStepsPerRun = opts.maxStepsPerRun ?? 80
     this.maxStackDepth = opts.maxStackDepth ?? 16
+    this.depth = opts.depth ?? 0
+    this.maxDepth = opts.maxDepth ?? 2
+    this.allowUser = opts.allowUser ?? true
   }
 
   get isRunning(): boolean {
@@ -93,6 +106,20 @@ export class AgentRuntime {
 
   get isStreaming(): boolean {
     return this.streaming?.active === true
+  }
+
+  /** A subagent's final report (its last user(response:none) message). */
+  get lastReport(): string | undefined {
+    return this.report
+  }
+
+  private addEntry(
+    role: Parameters<ConversationBuffer["add"]>[0],
+    text: string,
+    meta?: Parameters<ConversationBuffer["add"]>[2],
+  ): void {
+    const entry = this.conversation.add(role, text, meta)
+    this.bus.emit({ type: "conversation.added", entry })
   }
 
   /**
@@ -169,14 +196,14 @@ export class AgentRuntime {
 
   /** Surface an out-of-band error to the conversation without changing mode. */
   notify(message: string): void {
-    this.conversation.add("protocol", message)
+    this.addEntry("protocol", message)
     this.bus.emit({ type: "fatal", message })
     this.emitState()
   }
 
   /** Add a neutral system note to the transcript (UI/command output). */
   note(message: string): void {
-    this.conversation.add("note", message)
+    this.addEntry("note", message)
     this.emitState()
   }
 
@@ -210,7 +237,7 @@ export class AgentRuntime {
       record.resolved = true
       record.answer = trimmed
       this.bus.emit({ type: "user.resolved", request: record })
-      this.conversation.add("user", trimmed)
+      this.addEntry("user", trimmed)
       this.userRequest = undefined
       this.mode = this.stack.isEmpty ? "push" : "execute"
       this.emitState()
@@ -223,7 +250,7 @@ export class AgentRuntime {
       throw new Error("Agent is already running; wait for it to yield before sending input.")
     }
 
-    this.conversation.add("user", trimmed)
+    this.addEntry("user", trimmed)
     this.mode = this.stack.isEmpty ? "push" : "execute"
     this.emitState()
     await this.run()
@@ -265,6 +292,7 @@ export class AgentRuntime {
       system: buildSystemPrompt(allowedTools),
       prompt: buildUserPrompt({
         mode: this.mode,
+        depth: this.depth,
         conversation: this.conversation.entries(),
         stack: this.stack.list(),
         files: this.files.materialize(),
@@ -318,14 +346,14 @@ export class AgentRuntime {
     if (controller.signal.aborted) {
       this.streaming = undefined
       this.bus.emit({ type: "model.call.aborted" })
-      this.conversation.add("note", "interrupted by user")
+      this.addEntry("note", "interrupted by user")
       this.emitState()
       return { kind: "stop" }
     }
 
     // Move any streamed reasoning into the conversation regardless of outcome.
     const reasoning = this.takeStreamedReasoning()
-    if (reasoning) this.conversation.add("thinking", reasoning)
+    if (reasoning) this.addEntry("thinking", reasoning)
     this.emitState()
 
     if (!failure && action) {
@@ -339,7 +367,7 @@ export class AgentRuntime {
       this.metrics.protocolErrors += 1
       const message = `PROTOCOL ERROR: ${error.message}`
       this.observation = message
-      this.conversation.add("protocol", message)
+      this.addEntry("protocol", message)
       this.bus.emit({ type: "protocol.error", message: error.message })
       this.emitState()
 
@@ -367,7 +395,9 @@ export class AgentRuntime {
     if (this.mode === "waiting_for_user") return []
     if (this.mode === "push") return MODE_TOOLS.push
     if (this.stack.isEmpty) return ["push", "user"]
-    return MODE_TOOLS.execute
+    const tools = [...MODE_TOOLS.execute]
+    // No deeper delegation once the nesting limit is reached.
+    return this.depth >= this.maxDepth ? tools.filter((tool) => tool !== "spawn") : tools
   }
 
   // ---------------------------------------------------------------------------
@@ -381,7 +411,7 @@ export class AgentRuntime {
       this.protocolErrors += 1
       this.metrics.protocolErrors += 1
       this.observation = `PROTOCOL ERROR: ${violation}`
-      this.conversation.add("protocol", this.observation)
+      this.addEntry("protocol", this.observation)
       this.bus.emit({ type: "protocol.error", message: violation })
       if (this.protocolErrors > this.maxProtocolErrors) {
         this.fail(`Repeated invalid actions. Last: ${violation}`)
@@ -401,6 +431,8 @@ export class AgentRuntime {
         return this.handleEdit(action.input.path, action.input.edits)
       case "push":
         return this.handlePush(action.input)
+      case "spawn":
+        return this.handleSpawn(action.input)
       case "pop":
         return this.handlePop(action.input)
       case "user":
@@ -418,9 +450,15 @@ export class AgentRuntime {
     if (action.tool === "push" && this.stack.depth >= this.maxStackDepth) {
       return `Cannot push: maximum stack depth (${this.maxStackDepth}) reached.`
     }
-    const requiresFrame: ToolName[] = ["bash", "read", "edit", "pop"]
+    const requiresFrame: ToolName[] = ["bash", "read", "edit", "pop", "spawn"]
     if (requiresFrame.includes(action.tool) && this.stack.isEmpty) {
       return `Tool "${action.tool}" requires an active task frame. Push one first, or report to the user.`
+    }
+    if (action.tool === "spawn" && this.depth >= this.maxDepth) {
+      return `Subagent nesting limit (${this.maxDepth}) reached; handle this yourself.`
+    }
+    if (action.tool === "user" && !this.allowUser && action.input.response === "required") {
+      return "A subagent cannot ask the user. Report with user(response:none) instead."
     }
     return undefined
   }
@@ -506,6 +544,60 @@ export class AgentRuntime {
     return true
   }
 
+  private async handleSpawn(action: PushAction): Promise<boolean> {
+    const MAX_SUBAGENT_ENTRIES = 60
+    let forwarded = 0
+    const child = new AgentRuntime({
+      cwd: this.cwd,
+      llm: this.llm,
+      depth: this.depth + 1,
+      maxDepth: this.maxDepth,
+      allowUser: false,
+      maxStepsPerRun: this.maxStepsPerRun,
+      maxStackDepth: this.maxStackDepth,
+      maxProtocolErrors: this.maxProtocolErrors,
+      fileBudgetTokens: this.files.budgetTokens,
+      conversationBudgetTokens: this.files.budgetTokens,
+    })
+
+    // A subagent starts on the frame it was spawned for — the frame IS the
+    // delegation boundary. It gets its own stack, file working set and history.
+    const frame = child.stack.push(action)
+    child.mode = "execute"
+    this.bus.emit({ type: "subagent.started", depth: child.depth, frame })
+    this.bus.emit({ type: "tool.started", tool: "spawn" })
+
+    const stopForwarding = child.bus.on((event) => {
+      if (event.type !== "conversation.added") return
+      if (forwarded >= MAX_SUBAGENT_ENTRIES) return
+      forwarded += 1
+      const entry = event.entry
+      this.addEntry("subagent", entry.text, {
+        depth: child.depth,
+        subrole: entry.role,
+        ...(entry.tool ? { tool: entry.tool } : {}),
+      })
+    })
+
+    let report: string
+    let ok = true
+    try {
+      await child.run()
+      report = child.lastReport ?? "(subagent finished without a report)"
+    } catch (error) {
+      ok = false
+      report = `subagent failed: ${error instanceof Error ? error.message : String(error)}`
+    } finally {
+      stopForwarding()
+    }
+
+    this.metrics.subagents += 1
+    this.bus.emit({ type: "tool.finished", tool: "spawn", ok })
+    this.bus.emit({ type: "subagent.finished", depth: child.depth, report })
+    this.record("spawn", action, `subagent report:\n${report}`)
+    return true
+  }
+
   private handlePush(action: PushAction): boolean {
     const frame = this.stack.push(action)
     this.mode = "execute"
@@ -546,7 +638,8 @@ export class AgentRuntime {
     }
     this.userRequest = record
     this.metrics.userRequests += 1
-    this.conversation.add("agent", formatUserMessage(record))
+    const message = formatUserMessage(record)
+    this.addEntry("agent", message)
     this.bus.emit({ type: "user.request", request: record })
 
     if (action.response === "required") {
@@ -556,6 +649,7 @@ export class AgentRuntime {
     }
 
     // optional / none: report and yield without waiting.
+    this.report = message
     this.userRequest = undefined
     this.mode = this.stack.isEmpty ? "push" : "execute"
     this.bus.emit({ type: "state.changed" })
@@ -567,15 +661,15 @@ export class AgentRuntime {
   // ---------------------------------------------------------------------------
 
   private record(tool: string, input: unknown, observation: string): void {
-    this.conversation.add("action", describeToolCall(tool, input), { tool })
-    this.conversation.add("observation", observation)
+    this.addEntry("action", describeToolCall(tool, input), { tool })
+    this.addEntry("observation", observation)
     this.observation = observation
     this.emitState()
   }
 
   private fail(message: string): void {
     this.bus.emit({ type: "fatal", message })
-    this.conversation.add("protocol", `FATAL: ${message}`)
+    this.addEntry("protocol", `FATAL: ${message}`)
     this.observation = `FATAL: ${message}`
     this.userRequest = {
       id: randomUUID(),

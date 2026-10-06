@@ -15,7 +15,7 @@ prose.
 
 ```
 ENVIRONMENT          bash(command) · read(path) · edit(path, edits)
-EXECUTION CONTROL    push(taskFrame) · pop(disposition)
+EXECUTION CONTROL    push(taskFrame) · pop(disposition) · spawn(taskFrame)
 HUMAN BOUNDARY       user(request)          <- the ONLY user-visible output
 ```
 
@@ -280,7 +280,33 @@ src/
 
 Note: the loop is implemented inside `runtime.ts` rather than a separate `loop.ts`.
 
-### Runtime invariants
+### Subagents
+
+A task frame is the natural delegation boundary. `spawn({why, scope, knownContext,
+definitionOfDone})` runs that frame in a **fresh subagent** with its own task stack,
+file working set and conversation. The parent blocks on the spawn, then receives the
+subagent's report as an observation:
+
+```
+  → spawn  Count the .js files under src/ and report the count
+▌ │ ⤷ → bash  find src -name '*.js' | sort
+▌ │ ⤷ src/a.js
+▌ │ ⤷ src/b.js
+▌ │ ⤷ → agent
+▌ subagent report: 3 .js files: src/a.js, src/b.js, src/c.js
+```
+
+- Each subagent keeps its **own stack and its own file LRU** — it does not inherit
+  the parent's context, and its transcript is forwarded to the parent as
+  `subagent` entries that are shown indented (`⤷`) but **excluded from the parent's
+  prompt** (and capped, so a chatty subagent cannot flood the parent).
+- Subagents share the working directory, so edits land on disk; the parent
+  re-reads files it cares about.
+- Subagents cannot ask the human ("A subagent cannot ask the user. Report with
+  `user(response:none)` instead.") and must finish with a `user(response:none)`
+  report. Nesting is bounded (`maxDepth`, default 2).
+
+## Runtime invariants
 
 - **Tool-only output.** Every model turn must validate against exactly one Zod schema.
   Invalid output is rejected and reported back as a protocol error; it is never
@@ -290,6 +316,9 @@ Note: the loop is implemented inside `runtime.ts` rather than a separate `loop.t
   conversation history conflicts with the current file context, the file context wins.
 - **Single active task.** Only the top frame is executable. `bash`/`read`/`edit`/`pop`
   require a frame; in push mode only `push`/`user` are available.
+- **Bounded delegation.** `spawn` gives a frame to an isolated subagent (own stack,
+  own file LRU, own history). Depth is capped, subagents cannot ask the human, and
+  their transcript is excluded from the parent's prompt.
 - **Pop ≠ success.** `pop` records a disposition: `completed`, `disproven`,
   `unnecessary`, `abandoned`, `superseded`, `blocked`, `failed`, `partial`.
 - **User does not change the stack.** `user(response:"required")` suspends and resumes

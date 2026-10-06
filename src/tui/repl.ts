@@ -157,6 +157,13 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
       case "note":
         return concat([fg(theme.yellow)("⏹ "), dim(entry.text)])
+      case "subagent": {
+        const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
+        const inner = entry.subrole ?? "observation"
+        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
+        if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
+        return concat([dim(marker + entry.text)])
+      }
     }
   }
 
@@ -398,7 +405,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   opts.runtime.bus.on((event) => {
-    if (event.type === "state.changed") onState()
+    if (event.type === "state.changed" || event.type === "conversation.added") onState()
   })
 
   onState()

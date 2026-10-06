@@ -13,6 +13,7 @@ export function createMetrics(): Metrics {
     filesEvicted: 0,
     protocolErrors: 0,
     userRequests: 0,
+    subagents: 0,
     outcomes: {
       completed: 0,
       disproven: 0,

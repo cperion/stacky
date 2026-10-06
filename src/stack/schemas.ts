@@ -102,6 +102,7 @@ export const ACTION_SCHEMAS = {
   edit: editPatchSchema,
   push: pushSchema,
   pop: popSchema,
+  spawn: pushSchema,
   user: userRequestSchema,
 } as const
 

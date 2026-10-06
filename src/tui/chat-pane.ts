@@ -163,6 +163,14 @@ export class ChatPane {
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "note":
         return concat([fg(theme.yellow)("⏹ "), dim(block(entry.text, width - 2, 0))])
+      case "subagent": {
+        const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
+        const inner = entry.subrole ?? "observation"
+        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
+        if (inner === "observation") return concat([dim(marker + entry.text)])
+        if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
+        return concat([dim(marker + entry.text)])
+      }
       case "protocol":
         return concat([fg(theme.red)(block(entry.text, width, 2, "✗"))])
     }

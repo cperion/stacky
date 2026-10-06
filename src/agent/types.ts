@@ -95,6 +95,7 @@ export type ConversationRole =
   | "thinking"
   | "note"
   | "protocol"
+  | "subagent"
 
 export type ConversationEntry = {
   id: string
@@ -104,6 +105,9 @@ export type ConversationEntry = {
   tokens: number
   /** Set on "action" entries: the tool that was called, for display. */
   tool?: string
+  /** Set on "subagent" entries: how deep the subagent is and what it was saying. */
+  depth?: number
+  subrole?: ConversationRole
 }
 
 export type StreamingState = {
@@ -137,6 +141,7 @@ export type Metrics = {
   filesEvicted: number
   protocolErrors: number
   userRequests: number
+  subagents: number
   outcomes: Record<PopOutcome, number>
 }
 

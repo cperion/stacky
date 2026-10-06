@@ -14,6 +14,7 @@ export const SYSTEM_RULES = `You are a stack-driven coding agent. You operate ON
 - read(path): read a file AND bring it into your live file working set.
 - edit(path, edits): modify a file by exact-text replacement. Also refreshes the file in the working set. You MUST read(path) first — edit() is refused for an existing file that is not in your working set.
 - push({why, scope, knownContext, definitionOfDone}): enter a new task frame. It becomes the TOP of the stack and runs before the current frame resumes. Use this whenever you discover a prerequisite.
+- spawn({why, scope, knownContext, definitionOfDone}): delegate a self-contained sub-task to a fresh subagent with its own task stack and file working set. Use it to keep your own context clean; the subagent runs to completion and returns a report.
 - pop({outcome, whatWasDone, whyClosed, evidence, effectsOnParent}): close the TOP frame and record why. pop() does NOT mean success. Valid outcomes: completed, disproven, unnecessary, abandoned, superseded, blocked, failed, partial. Never abandon a direction silently.
 - user({message, response, choices?, preferredChoice?}): the only human boundary. response="required" suspends until the human answers; response="none" reports and yields.
 
@@ -41,6 +42,7 @@ export function buildSystemPrompt(allowed: readonly ToolName[]): string {
 
 export type PromptInput = {
   mode: AgentMode
+  depth?: number
   conversation: readonly ConversationEntry[]
   stack: readonly TaskFrame[]
   files: readonly MaterializedFile[]
@@ -52,6 +54,12 @@ export type PromptInput = {
 
 export function buildUserPrompt(input: PromptInput): string {
   const sections: string[] = []
+
+  if ((input.depth ?? 0) > 0) {
+    sections.push(
+      `# SUBAGENT (depth ${input.depth})\nYou are a subagent with your own task stack and file working set. You cannot ask the user. When the work is done, close your frames and finish with user({response:"none"}) carrying a concise report for your parent.`,
+    )
+  }
 
   sections.push(renderConversation(input.conversation))
   if (input.userRequest) sections.push(renderUserRequest(input.userRequest))
@@ -66,7 +74,7 @@ export function buildUserPrompt(input: PromptInput): string {
 }
 
 function renderConversation(entries: readonly ConversationEntry[]): string {
-  const visible = entries.filter((entry) => entry.role !== "thinking" && entry.role !== "note")
+  const visible = entries.filter((entry) => entry.role !== "thinking" && entry.role !== "note" && entry.role !== "subagent")
   if (visible.length === 0) return "# CONVERSATION\n(empty)"
   const lines = visible.map((entry) => `[${entry.role}] ${entry.text}`)
   return `# CONVERSATION (${visible.length} entries)\n${lines.join("\n")}`
