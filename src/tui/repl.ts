@@ -13,7 +13,7 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { theme } from "./theme.ts"
-import { block, clampLines, concat, fit, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 
@@ -120,7 +120,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const entryParts = (entry: ConversationEntry, width: number, showThinking: boolean): StyledText | undefined => {
     switch (entry.role) {
       case "user":
-        return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), plain(block(entry.text, width, 2))])
+        return shadeBlock(
+          concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), plain(block(entry.text, width, 2))]),
+          width,
+          theme.shade,
+        )
       case "agent":
         return concat([fg(theme.cyan)("▌ "), bold("Agent"), plain("\n"), plain(block(entry.text, width, 2))])
       case "thinking":
@@ -134,7 +138,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "action":
         return actionParts(entry.text, width)
       case "observation":
-        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
+        return shadeBlock(quoteBlock(clampLines(entry.text, 16), width, theme.dim), width, theme.shade)
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
     }

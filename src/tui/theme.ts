@@ -28,6 +28,11 @@ export const theme = {
   /** Bright black: AA muted tone for structure (borders, rules, secondary text). */
   dim: RGBA.fromIndex(8),
   gray: RGBA.fromIndex(8),
+  /**
+   * One shared background for user input and tool output (ANSI 256 greyscale).
+   * A subtle lift off the default background; agent text keeps the default.
+   */
+  shade: RGBA.fromIndex(236),
 } as const
 
 /** Terminal-native scrollbar colours, shared by every pane. */

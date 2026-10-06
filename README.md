@@ -126,11 +126,14 @@ In the panes interface, `Ctrl+P` → **Interface** switches to the REPL; in the 
 
 Switch with `--ui panes|repl` on the command line as well.
 
-### Tool output
+### Shading
 
-Tool output is drawn as a blockquote: a coloured `▌` bar on the left and the text at
-the **default foreground**. No background colour is painted, so contrast stays maximal
-on any terminal theme — the bar uses an ANSI palette index, never a hardcoded RGB.
+One ANSI background colour is shared by **user input** and **tool output**
+(`48;5;236` — a subtle lift off the default background, padded into a solid
+rectangle). Agent messages and thinking keep the terminal's default background, so
+the transcript reads as *your turns + tool results* on a tint, and *the agent's
+words* on the theme's own background. Only one colour is used, and it is an ANSI
+palette index — never a hardcoded RGB.
 
 ## Streaming & thinking
 

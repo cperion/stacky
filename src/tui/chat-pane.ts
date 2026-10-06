@@ -13,7 +13,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, paneInner, clampLines, concat, fit, header, paneRule, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { concat, block, paneInner, clampLines, fit, header, paneRule, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -87,7 +87,7 @@ export class ChatPane {
     for (const entry of state.conversation) {
       if (entry.role === "thinking" && !showThinking) continue
       parts.push(plain("\n\n"))
-      parts.push(...this.renderEntry(entry, width))
+      parts.push(this.renderEntry(entry, width))
     }
 
     const streaming = state.streaming
@@ -109,29 +109,34 @@ export class ChatPane {
     return t`${color("▌")} ${bold(label)}`
   }
 
-  private renderEntry(entry: ConversationEntry, width: number): Part[] {
+  private renderEntry(entry: ConversationEntry, width: number): Part {
     switch (entry.role) {
       case "user":
-        return [this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))]
+        // User input shares the tool-output background tint.
+        return shadeBlock(
+          concat([this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))]),
+          width,
+          theme.shade,
+        )
       case "agent":
-        return [this.bar(fg(theme.cyan), "Agent"), plain("\n"), plain(block(entry.text, width, 2))]
+        return concat([this.bar(fg(theme.cyan), "Agent"), plain("\n"), plain(block(entry.text, width, 2))])
       case "thinking":
-        return [
+        return concat([
           this.bar(fg(theme.magenta), "Thinking"),
           plain("\n"),
           italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
-        ]
+        ])
       case "action":
         return this.renderAction(entry.text, width)
       case "observation":
-        return [quoteBlock(clampLines(entry.text, 16), width, theme.dim)]
+        return shadeBlock(quoteBlock(clampLines(entry.text, 16), width, theme.dim), width, theme.shade)
       case "protocol":
-        return [fg(theme.red)(block(entry.text, width, 2, "✗"))]
+        return concat([fg(theme.red)(block(entry.text, width, 2, "✗"))])
     }
   }
 
   /** Tool calls are the agent's actions: render them prominently, args subordinate. */
-  private renderAction(text: string, width: number): Part[] {
+  private renderAction(text: string, width: number): Part {
     const paren = text.indexOf("(")
     const tool = paren >= 0 ? text.slice(0, paren) : text
     const args = paren >= 0 ? text.slice(paren) : ""
@@ -146,7 +151,7 @@ export class ChatPane {
       parts.push(plain(`\n${" ".repeat(hanging)}`))
       parts.push(dim(line))
     }
-    return parts
+    return concat(parts)
   }
 
   private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): Part[] {

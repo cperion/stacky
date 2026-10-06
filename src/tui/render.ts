@@ -3,6 +3,7 @@ import {
   dim,
   fg,
   isStyledText,
+  RGBA,
   StyledText,
   stringToStyledText,
   type BoxRenderable,
@@ -132,6 +133,46 @@ export function fit(text: string, width: number): string {
 export function paneInner(box: BoxRenderable, renderer: CliRenderer, frac: number, pad = 5): number {
   const width = box.width || Math.floor(renderer.terminalWidth * frac)
   return Math.max(12, width - pad)
+}
+
+/**
+ * Paint a single background colour behind a whole block, padding every line out
+ * to `width` so the shading forms a solid rectangle. Foregrounds and attributes
+ * are preserved. This is how user input and tool output get one shared tint.
+ */
+export function shadeBlock(content: StyledText, width: number, background: RGBA): StyledText {
+  const limit = Math.max(1, width)
+  const out: TextChunk[] = []
+  let lineLength = 0
+
+  for (const chunk of content.chunks) {
+    const segments = chunk.text.split("\n")
+    segments.forEach((segment, index) => {
+      if (index > 0) {
+        if (lineLength < limit) {
+          out.push({ __isChunk: true, text: " ".repeat(limit - lineLength), fg: chunk.fg, bg: background, attributes: chunk.attributes })
+        }
+        out.push({ __isChunk: true, text: "\n", fg: chunk.fg, bg: background, attributes: chunk.attributes })
+        lineLength = 0
+      }
+      if (segment) {
+        out.push({
+          __isChunk: true,
+          text: segment,
+          fg: chunk.fg,
+          bg: background,
+          attributes: chunk.attributes,
+          ...(chunk.link ? { link: chunk.link } : {}),
+        })
+        lineLength += segment.length
+      }
+    })
+  }
+
+  if (lineLength > 0 && lineLength < limit) {
+    out.push({ __isChunk: true, text: " ".repeat(limit - lineLength), bg: background })
+  }
+  return new StyledText(out)
 }
 
 /**
