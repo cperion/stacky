@@ -57,11 +57,12 @@ export class ChatPane {
       placeholderColor: theme.gray,
       cursorColor: theme.fg,
     })
-    this.input.onSubmit = () => {
-      const value = this.input.value
+    // InputRenderable.submit() overrides Textarea.submit() and does NOT call
+    // onSubmit — it emits an "enter" event with the submitted value instead.
+    this.input.on("enter", (value: string) => {
       this.input.value = ""
       opts.onSubmit(value)
-    }
+    })
 
     this.box.add(this.scroll)
     this.box.add(this.input)
