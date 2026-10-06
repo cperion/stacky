@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import type { ModelAction, PopAction, PushAction, ToolName, UserRequestAction } from "../stack/schemas.ts"
 import type {
   AgentMode,
@@ -11,7 +12,7 @@ import type {
 } from "./types.ts"
 import { TaskStack } from "../stack/stack.ts"
 import { ConversationBuffer } from "./conversation.ts"
-import { FileWorkingSet } from "../files/lru.ts"
+import { FileWorkingSet, resolvePath } from "../files/lru.ts"
 import { EventBus, type RuntimeEvent } from "./events.ts"
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
 import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } from "../llm/client.ts"
@@ -437,6 +438,21 @@ export class AgentRuntime {
   }
 
   private handleEdit(path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[]): boolean {
+    // Read-before-edit: only edit existing files that are in the working set, so
+    // the model never patches contents it has not actually seen. Creating a new
+    // file is still allowed (there is nothing to read).
+    const exists = existsSync(resolvePath(this.cwd, path))
+    if (exists && !this.files.has(path)) {
+      this.bus.emit({ type: "tool.started", tool: "edit" })
+      this.bus.emit({ type: "tool.finished", tool: "edit", ok: false })
+      this.record(
+        "edit",
+        { path, edits: edits.length },
+        `refused: ${path} is not in your working set. Call read("${path}") first, then retry the edit against the current contents.`,
+      )
+      return true
+    }
+
     this.bus.emit({ type: "tool.started", tool: "edit" })
     const result = runEdit(path, edits, { cwd: this.cwd })
     this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })

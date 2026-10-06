@@ -127,11 +127,31 @@ describe("AgentRuntime", () => {
     writeFileSync(join(dir, "dup.txt"), "x\nx\n")
     const runtime = makeRuntime([
       { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+      { tool: "read", input: { path: "dup.txt" } },
       { tool: "edit", input: { path: "dup.txt", edits: [{ oldText: "x", newText: "y" }] } },
       { tool: "user", input: { message: "done", response: "none" } },
     ])
     await runtime.request("go")
     expect(readFileSync(join(dir, "dup.txt"), "utf8")).toBe("x\nx\n")
+  })
+
+  test("refuses to edit an existing file that was not read first", async () => {
+    const events: RuntimeEvent[] = []
+    const runtime = makeRuntime(
+      [
+        { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d" } },
+        { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "nope" }] } },
+        { tool: "read", input: { path: "a.txt" } },
+        { tool: "edit", input: { path: "a.txt", edits: [{ oldText: "hello world", newText: "hello!" }] } },
+        { tool: "user", input: { message: "done", response: "none" } },
+      ],
+      events,
+    )
+    await runtime.request("go")
+    // First edit was refused; the retry after read() succeeded.
+    expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("hello!")
+    const observations = runtime.snapshot().conversation.filter((e) => e.role === "observation")
+    expect(observations.some((o) => o.text.includes("not in your working set"))).toBe(true)
   })
 
   test("creates a new file when oldText is empty", async () => {
