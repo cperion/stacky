@@ -12,7 +12,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { block, chatPaneInner, clampLines, concat, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
+import { block, paneInner, clampLines, concat, header, paneRule, plain, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
@@ -76,7 +76,7 @@ export class ChatPane {
   }
 
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
-    const width = chatPaneInner(this.renderer, 0.26)
+    const width = paneInner(this.box, this.renderer, 0.5)
     const parts: Part[] = [header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), paneRule(width), plain("\n")]
 
     if (state.conversation.length === 0) {
@@ -177,18 +177,21 @@ export class ChatPane {
     choices.forEach((choice, index) => {
       const isSelected = index === selected
       const isPreferred = request.preferredChoice?.id === choice.id
-      const marker = isSelected ? fg(theme.blue)("❯") : plain(" ")
-      const label = `${index + 1}. ${choice.label}`
-      parts.push(marker, plain(" "))
-      parts.push(isSelected ? bold(label) : plain(label))
-      if (isPreferred) parts.push(plain("  "), fg(theme.green)("recommended"))
-      if (choice.description) {
-        parts.push(plain("\n     "), dim(choice.description))
-      }
+      const marker = isSelected ? "❯" : " "
+      const tag = isPreferred ? "  recommended" : ""
+      const label = `${marker} ${index + 1}. ${choice.label}${tag}`
+      wrapRaw(label, width).forEach((line, i) => {
+        if (i > 0) parts.push(plain("\n"))
+        parts.push(isSelected ? bold(fg(theme.blue)(line)) : plain(line))
+      })
       parts.push(plain("\n"))
+      if (choice.description) {
+        parts.push(plain(block(choice.description, width, 5)))
+        parts.push(plain("\n"))
+      }
     })
     if (request.preferredChoice) {
-      parts.push(plain("\n"), dim(`recommended · ${request.preferredChoice.reason}`), plain("\n"))
+      parts.push(plain("\n"), dim(block(`recommended · ${request.preferredChoice.reason}`, width, 0)), plain("\n"))
     }
     parts.push(plain("\n"), dim("j/k move · l/Enter select · or type a reply"))
     return parts

@@ -295,6 +295,10 @@ export async function runApp(opts: AppOptions): Promise<void> {
   render()
   chatPane.focus()
 
+  // Box widths are only known after the first layout pass; re-render once so
+  // text wrapping uses the real pane widths instead of the fraction fallback.
+  setTimeout(() => render(), 60)
+
   if (opts.initialTask) {
     void submit(opts.initialTask)
   }

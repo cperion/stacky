@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
 import { theme, scrollbarTheme } from "./theme.ts"
-import { concat, block, header, headerWith, paneRule, sidePaneInner, plain, type Dimension, type Part } from "./render.ts"
+import { concat, block, header, headerWith, paneRule, paneInner, plain, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
   readonly box: BoxRenderable
@@ -43,7 +43,7 @@ export class TaskPane {
   }
 
   update(state: AgentState, showHistory: boolean): void {
-    const width = sidePaneInner(this.renderer, 0.26)
+    const width = paneInner(this.box, this.renderer, 0.26)
     const top = state.stack[state.stack.length - 1]
     const parents = state.stack.slice(0, -1)
 

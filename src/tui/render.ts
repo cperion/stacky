@@ -4,6 +4,7 @@ import {
   isStyledText,
   StyledText,
   stringToStyledText,
+  type BoxRenderable,
   type CliRenderer,
   type TextChunk,
 } from "@opentui/core"
@@ -115,19 +116,13 @@ export function rightAlign(value: string, width: number): string {
 }
 
 /**
- * Inner content width for a fixed-fraction side pane.
- * Subtracts border (2), horizontal padding (2) and a column for the scrollbar.
+ * Inner content width of a laid-out pane: actual box width when known, else the
+ * fraction fallback. Subtracts border (2), horizontal padding (2) and a column
+ * for the scrollbar.
  */
-export function sidePaneInner(renderer: CliRenderer, frac = 0.26): number {
-  return Math.max(16, Math.floor(renderer.terminalWidth * frac) - 5)
-}
-
-/** Inner content width for the flexible centre pane (terminal minus both side panes and gaps). */
-export function chatPaneInner(renderer: CliRenderer, sideFrac = 0.26): number {
-  const width = renderer.terminalWidth
-  const sideOuter = Math.floor(width * sideFrac)
-  const chatOuter = Math.max(30, width - 2 - 2 * sideOuter)
-  return Math.max(16, chatOuter - 5)
+export function paneInner(box: BoxRenderable, renderer: CliRenderer, frac: number, pad = 5): number {
+  const width = box.width || Math.floor(renderer.terminalWidth * frac)
+  return Math.max(12, width - pad)
 }
 
 /** Clamp text to a maximum number of lines, appending a marker when truncated. */
