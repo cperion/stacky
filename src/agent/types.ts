@@ -93,6 +93,7 @@ export type ConversationRole =
   | "action"
   | "observation"
   | "thinking"
+  | "note"
   | "protocol"
 
 export type ConversationEntry = {

@@ -21,7 +21,7 @@ export type StreamHandlers = {
 export interface LLMClient {
   /** Human-readable provider/model label shown in the UI. */
   readonly label: string
-  step(input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction>
+  step(input: ModelInput, handlers?: StreamHandlers, signal?: AbortSignal): Promise<ModelAction>
 }
 
 /** Raised when the model fails to produce exactly one valid tool call. */

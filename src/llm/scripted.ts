@@ -22,10 +22,11 @@ export class ScriptedLLM implements LLMClient {
     return this.steps.length - this.index
   }
 
-  async step(input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction> {
+  async step(input: ModelInput, handlers?: StreamHandlers, signal?: AbortSignal): Promise<ModelAction> {
     const step = this.steps[this.index]
     this.index += 1
     if (!step) return this.onExhausted()
+    if (signal?.aborted) throw abortError()
     return typeof step === "function" ? step(input, handlers) : step
   }
 }
@@ -39,7 +40,8 @@ export class DemoLLM implements LLMClient {
   readonly label = "mock/demo"
   private cursor = 0
 
-  async step(_input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction> {
+  async step(_input: ModelInput, handlers?: StreamHandlers, signal?: AbortSignal): Promise<ModelAction> {
+    if (signal?.aborted) throw abortError()
     this.cursor += 1
     switch (this.cursor) {
       case 1:
@@ -114,5 +116,11 @@ export class DemoLLM implements LLMClient {
 
 function stream(handlers: StreamHandlers | undefined, chunks: string[]): void {
   for (const chunk of chunks) handlers?.onReasoningDelta?.(chunk)
-  handlers?.onTextDelta?.("")
+}
+
+/** DOMException-compatible AbortError. */
+export function abortError(): Error {
+  const error = new Error("The operation was aborted.")
+  error.name = "AbortError"
+  return error
 }

@@ -38,7 +38,7 @@ export class AiSdkClient implements LLMClient {
     this.label = opts.label ?? "model"
   }
 
-  async step(input: ModelInput, handlers?: StreamHandlers): Promise<ModelAction> {
+  async step(input: ModelInput, handlers?: StreamHandlers, signal?: AbortSignal): Promise<ModelAction> {
     const result = streamText({
       model: this.model,
       system: input.system,
@@ -46,6 +46,7 @@ export class AiSdkClient implements LLMClient {
       tools: buildTools(input.allowedTools),
       toolChoice: this.opts.toolChoice ?? "required",
       stopWhen: stepCountIs(1),
+      ...(signal ? { abortSignal: signal } : {}),
       ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
       ...(this.opts.maxOutputTokens !== undefined ? { maxOutputTokens: this.opts.maxOutputTokens } : {}),
       ...(this.opts.reasoning !== undefined ? { reasoning: this.opts.reasoning } : {}),

@@ -161,6 +161,8 @@ export class ChatPane {
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
         return concat([fg(theme.red)(block(entry.text, width, 2, "✗"))])
+      case "note":
+        return concat([fg(theme.yellow)("⏹ "), dim(entry.text)])
     }
   }
 

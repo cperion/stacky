@@ -230,7 +230,7 @@ Options:
   --file-budget <tokens>   File working-set token budget (default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
   --config <path>          Config file (default: ${configPath()})
-  --ui <mode>              panes | repl (default: from config, usually panes)
+  --ui <mode>              panes | repl (default: repl)
   --theme <mode>           auto | dark | light (light = black on white)
   --session <path>         Persist/restore task state (JSON). File contents are never stored.
   --trace <path>           Append a JSONL execution trace
@@ -248,10 +248,12 @@ Keys (TUI):
   Esc / ←     close or step back in a menu
   Ctrl+C      quit
 
-REPL mode (--ui repl):
-  Output flows into the terminal scrollback; the footer holds status + prompt.
+REPL mode (default; --ui repl):
+  Output flows into the terminal scrollback; the footer shows status, the current
+  task, the context files and the prompt.
   ↑ / ↓       recall previous inputs
   j / k / l   move/select the choice list when the agent asks (prompt empty)
+  Esc         interrupt the in-flight model call, or clear the line
   /help       list commands (/model, /thinking, /status, /new, /ui panes, /quit)
 
 Defaults:

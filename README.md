@@ -87,9 +87,12 @@ Contrast comes from **hierarchy**, not from hardcoded colours:
 
 Two interfaces share the same runtime and can be switched at runtime:
 
-- **Panes** (default) — a fixed three-pane alternate-screen layout.
-- **REPL** (`--ui repl`) — output flows into the terminal's real scrollback and only
-a compact status + prompt footer stays pinned at the bottom, like a shell.
+- **REPL** (default) — output flows into the terminal's real scrollback, and a
+  pinned footer shows the live status, the current task, the context files and the
+  prompt, like a shell.
+- **Panes** (`--ui panes`) — a fixed three-pane alternate-screen layout.
+
+The REPL footer is the always-visible state surface:
 
 ```
 stacky  ·  REPL mode. Type a task, or /help for commands.
@@ -97,18 +100,24 @@ stacky  ·  REPL mode. Type a task, or /help for commands.
   fix the failing test
 ▌ Thinking
   │ The failure is in the token parser, so I should read it first.
-  → read  ({"path":"src/token.ts"})
-  │ read src/token.ts: 84 lines, ~900 tokens.
+  → read  src/token.ts
+▌ token.ts · 84 lines · ~900 tokens · now in the working set
 ▌ Agent
   Fixed it. Tests pass.
 
- EXECUTE   deepseek/deepseek-flash · llm 6 · depth 1 · files 3   ctrl+c quit · /help
+ EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5   ctrl+c quit · Esc interrupts · /help
+▌ TASK  Fix the failing token test   depth 1
+◆ FILES  src/token.ts  tests/token.test.ts   3.1k/24.0k
 ❯ _
 ```
 
+`▌ TASK` is the top task frame (with stack depth); `◆ FILES` is the current file
+working set with token pressure. Both update live.
+
 REPL keys: `↑`/`↓` recall previous inputs; `j`/`k`/`l` move and select the choice
-list when the agent asks a question (while the prompt is empty); everything else is
-ordinary typing. Slash commands replace the settings menu:
+list when the agent asks a question (while the prompt is empty); `Esc` interrupts the
+in-flight model call (or clears a half-typed line); everything else is ordinary
+typing. Slash commands replace the settings menu:
 
 ```
 /help                 list commands

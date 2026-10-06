@@ -13,7 +13,7 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, concat, fit, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, formatTokens, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 
@@ -24,7 +24,7 @@ export type ReplOptions = {
   notice?: string
 }
 
-const FOOTER_HEIGHT = 3
+const FOOTER_HEIGHT = 5
 
 /**
  * REPL interface: output flows into the terminal's real scrollback and only a
@@ -59,6 +59,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     wrapMode: "none",
     height: 1,
   })
+  const taskLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
+  const filesLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
   const live = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
   const promptRow = new BoxRenderable(renderer, { width: "100%", height: 1, flexDirection: "row" })
   promptRow.add(
@@ -82,6 +84,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   })
   promptRow.add(input)
   footer.add(status)
+  footer.add(taskLine)
+  footer.add(filesLine)
   footer.add(live)
   footer.add(promptRow)
   renderer.root.add(footer)
@@ -148,6 +152,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
+      case "note":
+        return concat([fg(theme.yellow)("⏹ "), dim(entry.text)])
     }
   }
 
@@ -185,12 +191,41 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const updateFooter = (state: AgentState): void => {
-    const busy = state.streaming?.active === true
+    const width = rendererWidth()
     const mode = state.mode === "waiting_for_user" ? "WAITING" : state.mode.toUpperCase()
     const m = state.metrics
-    const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · depth ${state.stack.length} · files ${state.files.length}`
-    const hint = busy ? "ctrl+c quit · /help" : "ctrl+c quit · /help"
-    status.content = concat([reverse(bold(` ${mode} `)), plain("  "), dim(meta), plain("   "), dim(hint)])
+    const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
+    status.content = concat([reverse(bold(` ${mode} `)), plain("  "), dim(meta), plain("   "), dim("ctrl+c quit · Esc interrupts · /help")])
+
+    // Current task stack (top frame) — always visible in the REPL.
+    const top = state.stack[state.stack.length - 1]
+    if (top) {
+      const depthLabel = state.stack.length > 1 ? `   depth ${state.stack.length}` : ""
+      taskLine.content = concat([
+        fg(theme.blue)("▌ "),
+        bold(fg(theme.blue)("TASK")),
+        plain("  "),
+        plain(clip(firstLine(top.why), width - 12 - depthLabel.length)),
+        depthLabel ? dim(depthLabel) : plain(""),
+      ])
+    } else {
+      taskLine.content = concat([dim("▌ "), dim("no active frame")])
+    }
+
+    // Current working set — the files the model can actually see.
+    const files = state.files.map((file) => file.path)
+    const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
+    const usage = files.length > 0 ? `   ${formatTokens(used)}/${formatTokens(opts.settings.config.fileBudgetTokens)}` : ""
+    filesLine.content =
+      files.length > 0
+        ? concat([
+            fg(theme.cyan)("◆ "),
+            bold(fg(theme.cyan)("FILES")),
+            plain("  "),
+            dim(clip(files.join("  "), width - 12 - usage.length)),
+            dim(usage),
+          ])
+        : concat([dim("◆ "), dim("no files in context")])
 
     live.content = liveContent(state)
   }
@@ -404,6 +439,14 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   let historyIndex = 0
 
   renderer.keyInput.on("keypress", (key) => {
+    if (key.name === "escape") {
+      key.preventDefault()
+      key.stopPropagation()
+      if (opts.runtime.isRunning) opts.runtime.interrupt()
+      else if (input.value.length > 0) input.value = ""
+      return
+    }
+
     const state = opts.runtime.snapshot()
     const choiceActive = state.mode === "waiting_for_user" && (state.userRequest?.choices?.length ?? 0) > 0
     const inputEmpty = input.value.length === 0
@@ -504,6 +547,15 @@ function tail(text: string, length: number): string {
   const flat = text.replace(/\s+/g, " ").trim()
   if (flat.length <= length) return flat
   return `…${flat.slice(-(length - 1))}`
+}
+
+function firstLine(text: string): string {
+  return text.split("\n")[0]?.trim() ?? ""
+}
+
+function clip(text: string, max: number): string {
+  if (max <= 1) return ""
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
 export function replSupported(): boolean {

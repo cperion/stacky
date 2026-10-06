@@ -3,6 +3,7 @@ import type { ClosedFrame, TaskFrame, UserRequestRecord } from "./types.ts"
 export type RuntimeEvent =
   | { type: "model.call.started"; mode: string }
   | { type: "model.call.finished"; tool: string }
+  | { type: "model.call.aborted" }
   | { type: "tool.started"; tool: string }
   | { type: "tool.finished"; tool: string; ok: boolean }
   | { type: "frame.pushed"; frame: TaskFrame }

@@ -25,7 +25,7 @@ export function defaultConfig(): StackyConfig {
     model: "deepseek-flash",
     thinking: false,
     showThinking: true,
-    ui: "panes",
+    ui: "repl",
     theme: "auto",
     fileBudgetTokens: 24_000,
     conversationBudgetTokens: 32_000,

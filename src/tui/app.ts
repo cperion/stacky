@@ -243,6 +243,19 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
       return
     }
 
+    // Esc interrupts the in-flight model call, else clears a half-typed message.
+    if (key.name === "escape") {
+      key.preventDefault()
+      key.stopPropagation()
+      if (opts.runtime.isRunning) {
+        opts.runtime.interrupt()
+      } else if (chatPane.input.value.length > 0) {
+        chatPane.input.value = ""
+      }
+      render()
+      return
+    }
+
     const snapshot = opts.runtime.snapshot()
     const choiceActive = snapshot.mode === "waiting_for_user" && (snapshot.userRequest?.choices?.length ?? 0) > 0
     const inputEmpty = chatPane.input.value.length === 0
@@ -284,14 +297,6 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
       key.stopPropagation()
       render()
       return
-    }
-
-    // Escape clears a half-typed message (there is no other modal open).
-    if (key.name === "escape" && chatPane.input.value.length > 0) {
-      chatPane.input.value = ""
-      key.preventDefault()
-      key.stopPropagation()
-      render()
     }
   })
 

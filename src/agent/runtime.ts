@@ -62,6 +62,7 @@ export class AgentRuntime {
   private running = false
   private protocolErrors = 0
   private streaming?: StreamingState
+  private abortController?: AbortController
 
   private readonly maxProtocolErrors: number
   private readonly maxStepsPerRun: number
@@ -92,6 +93,16 @@ export class AgentRuntime {
 
   get isStreaming(): boolean {
     return this.streaming?.active === true
+  }
+
+  /**
+   * Interrupt the in-flight model call at the API level (aborts its stream).
+   * Returns true if a call was actually in flight.
+   */
+  interrupt(): boolean {
+    if (!this.abortController) return false
+    this.abortController.abort()
+    return true
   }
 
   /** Swap the model. Only allowed while idle, so a turn is never interrupted. */
@@ -288,10 +299,22 @@ export class AgentRuntime {
 
     let action: ModelAction | undefined
     let failure: unknown
+    const controller = new AbortController()
+    this.abortController = controller
     try {
-      action = await this.llm.step(input, handlers)
+      action = await this.llm.step(input, handlers, controller.signal)
     } catch (error) {
       failure = error
+    }
+    this.abortController = undefined
+
+    // User interruption: discard the partial turn and yield control.
+    if (controller.signal.aborted) {
+      this.streaming = undefined
+      this.bus.emit({ type: "model.call.aborted" })
+      this.conversation.add("note", "interrupted by user")
+      this.emitState()
+      return { kind: "stop" }
     }
 
     // Move any streamed reasoning into the conversation regardless of outcome.
