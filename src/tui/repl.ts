@@ -13,7 +13,7 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, concat, fit, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { MODEL_CATALOG, PROVIDERS } from "../llm/catalog.ts"
 
@@ -91,42 +91,47 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   const rendererWidth = () => Math.max(20, renderer.width - 1)
 
-  const writeBlock = (content: StyledText, trailingBlank = true): void => {
+  const writeBlock = (content: StyledText, shaded: boolean, trailingBlank = true): void => {
     // writeToScrollback uses the root's height before layout, so compute it from
     // the content itself (one row per line, plus an optional blank separator).
     const lineCount = content.chunks.reduce((n, chunk) => n + (chunk.text.split("\n").length - 1), 0) + 1
     const height = lineCount + (trailingBlank ? 1 : 0)
     renderer.writeToScrollback((ctx) => {
-      const box = new BoxRenderable(ctx.renderContext, {
+      const root = new BoxRenderable(ctx.renderContext, {
         width: ctx.width,
         flexDirection: "column",
         backgroundColor: "transparent",
         shouldFill: false,
       })
-      box.add(
-        new TextRenderable(ctx.renderContext, {
-          content,
-          fg: theme.fg,
-          bg: "transparent",
-          wrapMode: "none",
+      const text = new TextRenderable(ctx.renderContext, {
+        content,
+        fg: theme.fg,
+        bg: shaded ? theme.shade : "transparent",
+        wrapMode: "none",
+      })
+      if (shaded) {
+        // A full-width background box so the tint spans every line to the edge.
+        const panel = new BoxRenderable(ctx.renderContext, {
           width: ctx.width,
-        }),
-      )
-      if (trailingBlank) {
-        box.add(new TextRenderable(ctx.renderContext, { content: " ", fg: theme.fg, bg: "transparent" }))
+          flexDirection: "column",
+          backgroundColor: theme.shade,
+        })
+        panel.add(text)
+        root.add(panel)
+      } else {
+        root.add(text)
       }
-      return { root: box, height, startOnNewLine: true, trailingNewline: true }
+      if (trailingBlank) {
+        root.add(new TextRenderable(ctx.renderContext, { content: " ", fg: theme.fg, bg: "transparent" }))
+      }
+      return { root, height, startOnNewLine: true, trailingNewline: true }
     })
   }
 
   const entryParts = (entry: ConversationEntry, width: number, showThinking: boolean): StyledText | undefined => {
     switch (entry.role) {
       case "user":
-        return shadeBlock(
-          concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), plain(block(entry.text, width, 2))]),
-          width,
-          theme.shade,
-        )
+        return concat([fg(theme.green)("▌ "), bold("You"), plain("\n"), plain(block(entry.text, width, 2))])
       case "agent":
         return concat([fg(theme.cyan)("▌ "), bold("Agent"), plain("\n"), plain(block(entry.text, width, 2))])
       case "thinking":
@@ -140,7 +145,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "action":
         return actionParts(entry.text, width)
       case "observation":
-        return shadeBlock(quoteBlock(clampLines(entry.text, 16), width, theme.dim), width, theme.shade)
+        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
     }
@@ -152,12 +157,12 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       if (printedIds.has(entry.id)) continue
       printedIds.add(entry.id)
       const parts = entryParts(entry, rendererWidth(), opts.settings.config.showThinking)
-      if (parts) writeBlock(parts)
+      if (parts) writeBlock(parts, entry.role === "user" || entry.role === "observation")
     }
   }
 
   const writeLine = (parts: Part[], trailingBlank = false): void => {
-    writeBlock(concat(parts), trailingBlank)
+    writeBlock(concat(parts), false, trailingBlank)
   }
 
   // ---- footer rendering ---------------------------------------------------

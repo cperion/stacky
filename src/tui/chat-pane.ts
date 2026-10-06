@@ -7,23 +7,29 @@ import {
   italic,
   reverse,
   ScrollBoxRenderable,
+  StyledText,
   t,
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarOptions } from "./theme.ts"
-import { concat, block, paneInner, clampLines, fit, header, paneRule, plain, quoteBlock, shadeBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, header, paneInner, paneRule, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
 }
 
+/**
+ * Chat pane. Each transcript block is its own renderable so that shaded blocks
+ * (user input and tool output) get a real full-width background box rather than
+ * relying on padded spaces.
+ */
 export class ChatPane {
   readonly box: BoxRenderable
   readonly input: InputRenderable
   private scroll: ScrollBoxRenderable
-  private text: TextRenderable
+  private blocks = 0
 
   constructor(
     private renderer: CliRenderer,
@@ -49,8 +55,6 @@ export class ChatPane {
       stickyStart: "bottom",
       scrollbarOptions: scrollbarOptions(),
     })
-    this.text = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "word" })
-    this.scroll.add(this.text)
 
     this.input = new InputRenderable(renderer, {
       placeholder: "Message the agent…",
@@ -78,46 +82,71 @@ export class ChatPane {
 
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
     const width = paneInner(this.box, this.renderer, 0.5)
-    const parts: Part[] = [header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), paneRule(width), plain("\n")]
+    this.clear()
+
+    this.addBlock(concat([header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), paneRule(width)]), false)
 
     if (state.conversation.length === 0) {
-      parts.push(plain("\n"), dim("No conversation yet. Describe a task below to begin."))
+      this.addBlock(concat([dim("No conversation yet. Describe a task below to begin.")]), false)
     }
 
     for (const entry of state.conversation) {
       if (entry.role === "thinking" && !showThinking) continue
-      parts.push(plain("\n\n"))
-      parts.push(this.renderEntry(entry, width))
+      const shaded = entry.role === "user" || entry.role === "observation"
+      this.addBlock(this.renderEntry(entry, width), shaded)
     }
 
     const streaming = state.streaming
-    if (streaming?.active) {
-      parts.push(plain("\n\n"))
-      parts.push(...this.renderStreaming(streaming, showThinking, width))
-    }
+    if (streaming?.active) this.addBlock(this.renderStreaming(streaming, showThinking, width), false)
 
     const pending = state.userRequest
     if (pending && state.mode === "waiting_for_user") {
-      parts.push(plain("\n\n"))
-      parts.push(...this.renderChoices(pending, selectedChoice, width))
+      this.addBlock(this.renderChoices(pending, selectedChoice, width), false)
     }
+  }
 
-    this.text.content = concat(parts)
+  /** Replace all transcript blocks. */
+  private clear(): void {
+    for (const child of [...this.scroll.getChildren()]) this.scroll.remove(child)
+    this.blocks = 0
+  }
+
+  /**
+   * Add one transcript block. Shaded blocks are wrapped in a full-width box so
+   * the background tint spans every line to the edge of the pane.
+   */
+  private addBlock(content: StyledText, shaded: boolean): void {
+    if (this.blocks > 0) {
+      this.scroll.add(new TextRenderable(this.renderer, { content: " ", fg: theme.fg, bg: theme.bg }))
+    }
+    const text = new TextRenderable(this.renderer, {
+      content,
+      fg: theme.fg,
+      bg: shaded ? theme.shade : theme.bg,
+      wrapMode: "none",
+    })
+    if (shaded) {
+      const container = new BoxRenderable(this.renderer, {
+        width: "100%",
+        flexDirection: "column",
+        backgroundColor: theme.shade,
+      })
+      container.add(text)
+      this.scroll.add(container)
+    } else {
+      this.scroll.add(text)
+    }
+    this.blocks += 1
   }
 
   private bar(color: ReturnType<typeof fg>, label: string): Part {
     return t`${color("▌")} ${bold(label)}`
   }
 
-  private renderEntry(entry: ConversationEntry, width: number): Part {
+  private renderEntry(entry: ConversationEntry, width: number): StyledText {
     switch (entry.role) {
       case "user":
-        // User input shares the tool-output background tint.
-        return shadeBlock(
-          concat([this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))]),
-          width,
-          theme.shade,
-        )
+        return concat([this.bar(fg(theme.green), "You"), plain("\n"), plain(block(entry.text, width, 2))])
       case "agent":
         return concat([this.bar(fg(theme.cyan), "Agent"), plain("\n"), plain(block(entry.text, width, 2))])
       case "thinking":
@@ -129,14 +158,14 @@ export class ChatPane {
       case "action":
         return this.renderAction(entry.text, width)
       case "observation":
-        return shadeBlock(quoteBlock(clampLines(entry.text, 16), width, theme.dim), width, theme.shade)
+        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "protocol":
         return concat([fg(theme.red)(block(entry.text, width, 2, "✗"))])
     }
   }
 
   /** Tool calls are the agent's actions: render them prominently, args subordinate. */
-  private renderAction(text: string, width: number): Part {
+  private renderAction(text: string, width: number): StyledText {
     const paren = text.indexOf("(")
     const tool = paren >= 0 ? text.slice(0, paren) : text
     const args = paren >= 0 ? text.slice(paren) : ""
@@ -154,7 +183,7 @@ export class ChatPane {
     return concat(parts)
   }
 
-  private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): Part[] {
+  private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): StyledText {
     const parts: Part[] = []
     if (streaming.reasoning && showThinking) {
       parts.push(this.bar(fg(theme.magenta), "Thinking"))
@@ -174,10 +203,10 @@ export class ChatPane {
     } else if (!streaming.reasoning && !streaming.text) {
       parts.push(dim("  …"))
     }
-    return parts
+    return concat(parts)
   }
 
-  private renderChoices(request: UserRequestRecord, selected: number, width: number): Part[] {
+  private renderChoices(request: UserRequestRecord, selected: number, width: number): StyledText {
     const parts: Part[] = [paneRule(width), plain("\n"), bold("Needs your input"), plain("\n\n")]
     const choices = request.choices ?? []
     choices.forEach((choice, index) => {
@@ -200,7 +229,6 @@ export class ChatPane {
       parts.push(plain("\n"), dim(block(`recommended · ${request.preferredChoice.reason}`, width, 0)), plain("\n"))
     }
     parts.push(plain("\n"), dim("j/k move · l/Enter select · or type a reply"))
-    return parts
+    return concat(parts)
   }
 }
-
