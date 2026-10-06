@@ -109,4 +109,29 @@ export type AgentState = {
   closedFrames: ClosedFrame[]
   files: FileEntry[]
   userRequest?: UserRequestRecord
+  metrics: Metrics
+}
+
+export type Metrics = {
+  llmCalls: number
+  toolCalls: number
+  pushes: number
+  pops: number
+  maxStackDepth: number
+  filesPromoted: number
+  filesEvicted: number
+  protocolErrors: number
+  userRequests: number
+  outcomes: Record<PopOutcome, number>
+}
+
+/** Serializable runtime state. File contents are never included — only paths. */
+export type SessionSnapshot = {
+  mode: AgentMode
+  conversation: ConversationEntry[]
+  stack: TaskFrame[]
+  closedFrames: ClosedFrame[]
+  filePaths: string[]
+  userRequest?: UserRequestRecord
+  metrics: Metrics
 }

@@ -4,7 +4,8 @@ import type {
   AgentMode,
   AgentState,
   ClosedFrame,
-  TaskFrame,
+  Metrics,
+  SessionSnapshot,
   UserRequestRecord,
 } from "./types.ts"
 import { TaskStack } from "../stack/stack.ts"
@@ -13,6 +14,7 @@ import { FileWorkingSet } from "../files/lru.ts"
 import { EventBus, type RuntimeEvent } from "./events.ts"
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
 import { ProtocolError, type LLMClient, type ModelInput } from "../llm/client.ts"
+import { createMetrics } from "./metrics.ts"
 import { runBash } from "../tools/bash.ts"
 import { runRead } from "../tools/read.ts"
 import { runEdit } from "../tools/edit.ts"
@@ -29,7 +31,8 @@ export type AgentRuntimeOptions = {
 }
 
 const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
-  push: ["push", "user", "read", "bash"],
+  // Planning is separate from execution: establish a frame before inspecting or changing anything.
+  push: ["push", "user"],
   execute: ["bash", "read", "edit", "push", "pop", "user"],
   waiting_for_user: [],
 }
@@ -42,6 +45,7 @@ const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
 export class AgentRuntime {
   readonly bus: EventBus
   readonly cwd: string
+  readonly metrics: Metrics = createMetrics()
 
   private llm: LLMClient
   private stack = new TaskStack()
@@ -86,7 +90,40 @@ export class AgentRuntime {
       closedFrames: [...this.closedFrames],
       files: this.files.list(),
       userRequest: this.userRequest,
+      metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
     }
+  }
+
+  /** Serializable state. Contains file paths only, never contents. */
+  exportSession(): SessionSnapshot {
+    return {
+      mode: this.mode,
+      conversation: [...this.conversation.entries()],
+      stack: [...this.stack.list()],
+      closedFrames: [...this.closedFrames],
+      filePaths: this.files.stableOrder().map((entry) => entry.path),
+      ...(this.userRequest ? { userRequest: this.userRequest } : {}),
+      metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
+    }
+  }
+
+  /**
+   * Restore a persisted session. File contents are re-materialized from disk
+   * on the next inference, so a restart cannot resurrect stale code.
+   */
+  importSession(data: SessionSnapshot): void {
+    this.conversation.restore(data.conversation ?? [])
+    this.stack.restore(data.stack ?? [])
+    this.closedFrames = [...(data.closedFrames ?? [])]
+    this.files.restore(data.filePaths ?? [])
+    this.observation = ""
+    this.userRequest = data.userRequest
+    if (data.metrics) Object.assign(this.metrics, data.metrics, { outcomes: { ...data.metrics.outcomes } })
+
+    const waiting =
+      this.userRequest !== undefined && !this.userRequest.resolved && this.userRequest.response === "required"
+    this.mode = waiting ? "waiting_for_user" : this.stack.isEmpty ? "push" : "execute"
+    this.emitState()
   }
 
   /** External human input. Resumes a suspended frame, or starts a new request. */
@@ -165,6 +202,7 @@ export class AgentRuntime {
       mode: this.mode,
     }
 
+    this.metrics.llmCalls += 1
     this.bus.emit({ type: "model.call.started", mode: this.mode })
     try {
       const action = await this.llm.step(input)
@@ -173,6 +211,7 @@ export class AgentRuntime {
     } catch (error) {
       if (error instanceof ProtocolError) {
         this.protocolErrors += 1
+        this.metrics.protocolErrors += 1
         const message = `PROTOCOL ERROR: ${error.message}`
         this.observation = message
         this.conversation.add("protocol", message)
@@ -194,8 +233,9 @@ export class AgentRuntime {
 
   private allowedTools(): ToolName[] {
     if (this.mode === "waiting_for_user") return []
-    if (this.mode === "execute" && this.stack.isEmpty) return ["push", "user"]
-    return MODE_TOOLS[this.mode]
+    if (this.mode === "push") return MODE_TOOLS.push
+    if (this.stack.isEmpty) return ["push", "user"]
+    return MODE_TOOLS.execute
   }
 
   // ---------------------------------------------------------------------------
@@ -207,6 +247,7 @@ export class AgentRuntime {
     const violation = this.validateAction(action)
     if (violation) {
       this.protocolErrors += 1
+      this.metrics.protocolErrors += 1
       this.observation = `PROTOCOL ERROR: ${violation}`
       this.conversation.add("protocol", this.observation)
       this.bus.emit({ type: "protocol.error", message: violation })
@@ -217,6 +258,7 @@ export class AgentRuntime {
     }
 
     this.protocolErrors = 0
+    this.metrics.toolCalls += 1
 
     switch (action.tool) {
       case "bash":
@@ -276,6 +318,8 @@ export class AgentRuntime {
     }
 
     const { evicted, entry } = this.files.promote(path)
+    this.metrics.filesPromoted += 1
+    this.metrics.filesEvicted += evicted.length
     this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
     for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
 
@@ -300,6 +344,8 @@ export class AgentRuntime {
     }
 
     const { evicted, entry } = this.files.promote(path)
+    this.metrics.filesPromoted += 1
+    this.metrics.filesEvicted += evicted.length
     this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
     for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
 
@@ -315,6 +361,8 @@ export class AgentRuntime {
   private handlePush(action: PushAction): boolean {
     const frame = this.stack.push(action)
     this.mode = "execute"
+    this.metrics.pushes += 1
+    this.metrics.maxStackDepth = Math.max(this.metrics.maxStackDepth, this.stack.depth)
     this.bus.emit({ type: "frame.pushed", frame })
     this.record("push", { why: action.why }, `Pushed frame ${frame.id}. It is now TOP of stack.`)
     return true
@@ -329,6 +377,8 @@ export class AgentRuntime {
       return true
     }
     this.closedFrames.push(closed)
+    this.metrics.pops += 1
+    this.metrics.outcomes[closed.disposition.outcome] += 1
     this.bus.emit({ type: "frame.popped", frame: closed })
     this.record(
       "pop",
@@ -347,6 +397,7 @@ export class AgentRuntime {
       resolved: false,
     }
     this.userRequest = record
+    this.metrics.userRequests += 1
     this.conversation.add("agent", formatUserMessage(record))
     this.bus.emit({ type: "user.request", request: record })
 

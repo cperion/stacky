@@ -5,7 +5,6 @@ import {
   fg,
   InputRenderable,
   ScrollBoxRenderable,
-  StyledText,
   t,
   TextRenderable,
   type CliRenderer,

@@ -1,25 +1,17 @@
-import {
-  bold,
-  BoxRenderable,
-  createCliRenderer,
-  dim,
-  fg,
-  StyledText,
-  t,
-  TextRenderable,
-} from "@opentui/core"
+import { BoxRenderable, createCliRenderer, TextRenderable } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
+import type { AgentState } from "../agent/types.ts"
 import { TaskPane } from "./task-pane.ts"
 import { ChatPane } from "./chat-pane.ts"
 import { FilePane } from "./file-pane.ts"
 import { theme } from "./theme.ts"
-import { plain } from "./render.ts"
 
 export type AppOptions = {
   runtime: AgentRuntime
   fileBudgetTokens: number
   providerLabel: string
   initialTask?: string
+  notice?: string
 }
 
 export async function runApp(opts: AppOptions): Promise<void> {
@@ -71,7 +63,7 @@ export async function runApp(opts: AppOptions): Promise<void> {
     taskPane.update(state, showHistory)
     chatPane.update(state, selectedChoice)
     filePane.update(state)
-    footer.content = renderFooter(state.mode, opts.providerLabel, showHistory)
+    footer.content = renderFooter(state, opts.providerLabel, showHistory, opts.notice)
   }
 
   const preferredIndex = (): number => {
@@ -166,12 +158,21 @@ export async function runApp(opts: AppOptions): Promise<void> {
   await done
 }
 
-function renderFooter(mode: string, providerLabel: string, showHistory: boolean): string {
+function renderFooter(
+  state: AgentState,
+  providerLabel: string,
+  showHistory: boolean,
+  notice: string | undefined,
+): string {
+  if (notice && state.conversation.length === 0) return ` ${notice}`
+
   const hint =
-    mode === "waiting_for_user"
+    state.mode === "waiting_for_user"
       ? "waiting for you · ↑/↓ choose · Enter select · type a reply"
-      : mode === "push"
-        ? "ctrl+c quit · h history"
+      : state.mode === "push"
+        ? "type a task · h history · ctrl+c quit"
         : "working… · ctrl+c quit"
-  return ` ${mode.toUpperCase()} · ${providerLabel} · ${hint}${showHistory ? " · history shown" : ""}`
+  const m = state.metrics
+  const stats = `llm ${m.llmCalls} · tools ${m.toolCalls} · files ${state.files.length} · depth ${state.stack.length}`
+  return ` ${state.mode.toUpperCase()} · ${providerLabel} · ${stats} · ${hint}${showHistory ? " · history shown" : ""}`
 }

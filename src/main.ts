@@ -2,6 +2,8 @@
 import { parseArgs } from "node:util"
 import { resolve } from "node:path"
 import { AgentRuntime } from "./agent/runtime.ts"
+import { attachSessionAutosave, loadSession } from "./agent/persistence.ts"
+import { attachTraceLogger } from "./agent/logger.ts"
 import { AiSdkClient } from "./llm/ai.ts"
 import { DemoLLM } from "./llm/scripted.ts"
 import { createModel, detectProvider, type ProviderName } from "./llm/providers.ts"
@@ -18,6 +20,8 @@ const { values } = parseArgs({
     task: { type: "string" },
     "file-budget": { type: "string" },
     "conversation-budget": { type: "string" },
+    session: { type: "string" },
+    trace: { type: "string" },
     help: { type: "boolean", short: "h", default: false },
   },
   allowPositionals: true,
@@ -41,16 +45,32 @@ const runtime = new AgentRuntime({
   conversationBudgetTokens,
 })
 
+if (values.trace) {
+  attachTraceLogger(runtime.bus, resolve(values.trace))
+}
+
+let resumeNote = ""
+if (values.session) {
+  const sessionPath = resolve(values.session)
+  if (loadSession(runtime, sessionPath)) {
+    const snapshot = runtime.snapshot()
+    resumeNote = `resumed session: ${snapshot.stack.length} open frame(s), ${snapshot.closedFrames.length} closed`
+  }
+  attachSessionAutosave(runtime, sessionPath)
+}
+
 const positionalTask = process.argv.slice(2).find((arg) => !arg.startsWith("-"))
 const initialTask = values.task ?? positionalTask
 
 if (values.headless) {
+  if (resumeNote) console.log(resumeNote)
   await runHeadless(runtime, initialTask)
 } else {
   await runApp({
     runtime,
     fileBudgetTokens,
     providerLabel,
+    ...(resumeNote ? { notice: resumeNote } : {}),
     ...(initialTask ? { initialTask } : {}),
   })
 }
@@ -157,6 +177,8 @@ Options:
   --cwd <path>             Workspace root (default: current directory)
   --file-budget <tokens>   File working-set token budget (default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
+  --session <path>         Persist/restore task state (JSON). File contents are never stored.
+  --trace <path>           Append a JSONL execution trace
   -h, --help               Show this help
 
 Environment:

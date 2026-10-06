@@ -114,7 +114,6 @@ export class FileWorkingSet {
     try {
       const stat = statSync(abs)
       if (!stat.isFile()) return 0
-      const bytes = Math.min(stat.size, this.maxFileBytes)
       const content = readFileSync(abs, "utf8")
       return estimateTokens(content.slice(0, this.maxFileBytes))
     } catch {

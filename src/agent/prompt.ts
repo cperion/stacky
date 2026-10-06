@@ -30,8 +30,8 @@ export const SYSTEM_RULES = `You are a stack-driven coding agent. You operate ON
 - If historical conversation or tool output conflicts with the current file context, the current file context is correct.
 
 ## Planning
-- In PUSH mode, establish the initial frame: understand the request, inspect what you need, then call push(...). Do not start editing yet.
-- In EXECUTE mode, work only on the top frame.`
+- In PUSH mode the only tools available are push(...) and user(...). Establish the initial frame BEFORE inspecting or changing anything: understand the request, then call push(...).
+- In EXECUTE mode, work only on the top frame. Inspect, edit, and verify there.`
 
 export function buildSystemPrompt(allowed: readonly ToolName[]): string {
   const listing = allowed.map((name) => `- ${name}: ${TOOL_DESCRIPTIONS[name]}`).join("\n")

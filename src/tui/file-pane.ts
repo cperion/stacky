@@ -4,7 +4,6 @@ import {
   dim,
   fg,
   ScrollBoxRenderable,
-  StyledText,
   t,
   TextRenderable,
   type CliRenderer,
