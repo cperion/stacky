@@ -244,6 +244,23 @@ Settings persist to `${XDG_CONFIG_HOME:-~/.config}/stacky/config.json` (override
 `STACKY_CONFIG` or `--config`). Only paths and preferences are stored — never file
 contents.
 
+### ChatGPT subscription (OAuth)
+
+Run against a ChatGPT plan instead of an OpenAI API key:
+
+```bash
+stacky
+/login chatgpt                 # opens the browser, then stores tokens
+/model chatgpt/gpt-5-codex
+```
+
+- Tokens live in `~/.config/stacky/auth.json` (mode `0600`) and refresh
+  transparently; set `STACKY_AUTH` to override the path. `/logout chatgpt`
+  removes them.
+- This is OAuth against the ChatGPT backend (Responses API), **not**
+  `api.openai.com` — no API key is needed or used. `chatgpt` is a provider like
+  any other, so `/model`, tab completion and `--provider chatgpt` all work.
+
 ## CLI
 
 ```

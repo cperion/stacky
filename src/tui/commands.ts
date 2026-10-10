@@ -2,6 +2,7 @@ import type { AgentRuntime } from "../agent/runtime.ts"
 import { PROVIDERS } from "../llm/catalog.ts"
 import { hasApiKey, type ProviderName } from "../llm/providers.ts"
 import { listModels } from "../llm/models.ts"
+import { clearAuth, loginWithBrowser } from "../llm/oauth.ts"
 import type { SettingsController, UiMode } from "./settings.ts"
 
 /** Everything a command needs, provided by whichever interface is running. */
@@ -161,6 +162,39 @@ const COMMANDS: Command[] = [
         return
       }
       ctx.print("Usage: /ui panes|repl")
+    },
+  },
+  {
+    name: "login",
+    usage: "/login [chatgpt]",
+    description: "sign in to a subscription provider (ChatGPT OAuth)",
+    run: async (arg, ctx) => {
+      const target = (arg.trim() || "chatgpt") as ProviderName
+      if (target !== "chatgpt") {
+        ctx.print('Only "chatgpt" uses login; other providers read API keys from the environment.')
+        return
+      }
+      ctx.print("Opening your browser to sign in to ChatGPT…")
+      try {
+        const auth = await loginWithBrowser((url) => ctx.print(`If it doesn't open automatically: ${url}`))
+        const account = auth.account_id ? ` (account ${auth.account_id.slice(0, 8)}…)` : ""
+        ctx.print(`Signed in to ChatGPT${account}. Switch with /model chatgpt/gpt-5-codex`)
+      } catch (error) {
+        ctx.print(`Login failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  },
+  {
+    name: "logout",
+    usage: "/logout [chatgpt]",
+    description: "sign out of a subscription provider",
+    run: (arg, ctx) => {
+      if ((arg.trim() || "chatgpt") !== "chatgpt") {
+        ctx.print("Nothing to sign out for that provider.")
+        return
+      }
+      clearAuth()
+      ctx.print("Signed out of ChatGPT.")
     },
   },
   {

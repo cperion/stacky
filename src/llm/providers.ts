@@ -2,9 +2,11 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createDeepSeek } from "@ai-sdk/deepseek"
 import { createOpenAI } from "@ai-sdk/openai"
 import type { LanguageModel } from "ai"
+import { createChatGptModel } from "./chatgpt.ts"
+import { hasChatGptAuth } from "./oauth.ts"
 import { defaultModelFor } from "./catalog.ts"
 
-export type ProviderName = "openai" | "anthropic" | "deepseek"
+export type ProviderName = "openai" | "anthropic" | "deepseek" | "chatgpt"
 
 export type CreateModelInput = {
   provider?: ProviderName
@@ -24,15 +26,17 @@ const ENV_KEYS: Record<ProviderName, string> = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
+  chatgpt: "CHATGPT_OAUTH",
 }
 
-const PROVIDER_ORDER: ProviderName[] = ["deepseek", "anthropic", "openai"]
+const PROVIDER_ORDER: ProviderName[] = ["deepseek", "anthropic", "openai", "chatgpt"]
 
 export function apiKeyEnvName(provider: ProviderName): string {
   return ENV_KEYS[provider]
 }
 
 export function hasApiKey(provider: ProviderName): boolean {
+  if (provider === "chatgpt") return hasChatGptAuth()
   return Boolean(process.env[ENV_KEYS[provider]])
 }
 
@@ -61,11 +65,15 @@ export function createLanguageModel(input: CreateModelInput = {}): LanguageModel
     case "deepseek":
       model = createDeepSeek({ apiKey, ...baseURL })(modelId)
       break
+    case "chatgpt":
+      model = createChatGptModel(modelId)
+      break
     case "openai":
     default:
       model = createOpenAI({ apiKey, ...baseURL })(modelId)
       break
   }
 
-  return { model, provider, modelId, hasApiKey: Boolean(apiKey) }
+  const hasKey = provider === "chatgpt" ? hasChatGptAuth() : Boolean(apiKey)
+  return { model, provider, modelId, hasApiKey: hasKey }
 }

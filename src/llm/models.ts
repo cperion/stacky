@@ -8,21 +8,24 @@ import { apiKeyEnvName, type ProviderName } from "./providers.ts"
  */
 const cache = new Map<ProviderName, string[]>()
 
-const ENDPOINTS: Record<ProviderName, string> = {
+const ENDPOINTS: Record<ProviderName, string | undefined> = {
   openai: "https://api.openai.com/v1/models",
   deepseek: "https://api.deepseek.com/models",
   anthropic: "https://api.anthropic.com/v1/models",
+  // The ChatGPT backend's listing endpoint is undocumented; use the catalog.
+  chatgpt: undefined,
 }
 
 export async function listModels(provider: ProviderName): Promise<string[]> {
   const cached = cache.get(provider)
   if (cached) return cached
 
+  const endpoint = ENDPOINTS[provider]
   const key = process.env[apiKeyEnvName(provider)]
-  if (!key) return MODEL_CATALOG[provider]
+  if (!endpoint || !key) return MODEL_CATALOG[provider]
 
   try {
-    const response = await fetch(ENDPOINTS[provider], {
+    const response = await fetch(endpoint, {
       headers:
         provider === "anthropic"
           ? { "x-api-key": key, "anthropic-version": "2023-06-01" }

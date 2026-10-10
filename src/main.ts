@@ -77,8 +77,10 @@ if (usingMock) {
   info = built.info
   if (!info.hasApiKey) {
     console.error(
-      `No API key for "${config.provider}" (expected ${config.provider.toUpperCase()}_API_KEY).\n` +
-        `Use --mock for the offline demo, or press Ctrl+P in the TUI to choose another model.`,
+      config.provider === "chatgpt"
+        ? `Not signed in to ChatGPT. Run /login chatgpt, use --mock for the offline demo, or pick another model.`
+        : `No API key for "${config.provider}" (expected ${config.provider.toUpperCase()}_API_KEY).\n` +
+            `Use --mock for the offline demo, or press Ctrl+P in the TUI to choose another model.`,
     )
   }
 }
