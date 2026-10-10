@@ -24,6 +24,10 @@ HUMAN BOUNDARY       user(request)          <- the ONLY user-visible output
 ```bash
 bun install
 
+# Use it as a command from anywhere (links this working copy)
+npm link
+npx stacky --help        # or just: stacky --help
+
 # Offline demo — no API key needed
 bun run src/main.ts --mock --task "survey the repository"
 
