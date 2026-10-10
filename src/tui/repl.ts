@@ -17,6 +17,8 @@ import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
 import { historyStripe } from "./history.ts"
+import { completeInput } from "./complete.ts"
+import { cachedModels } from "../llm/models.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -345,6 +347,20 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   let historyIndex = 0
 
   renderer.keyInput.on("keypress", (key) => {
+    if (key.name === "tab") {
+      key.preventDefault()
+      key.stopPropagation()
+      const completed = completeInput(
+        input.plainText,
+        input.cursorOffset,
+        cachedModels(opts.settings.config.provider),
+      )
+      if (completed) {
+        input.setText(completed.text)
+        input.cursorOffset = completed.cursor
+      }
+      return
+    }
     if (key.name === "escape") {
       key.preventDefault()
       key.stopPropagation()
