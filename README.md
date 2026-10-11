@@ -58,12 +58,17 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 
 | Key | Action |
 | --- | --- |
-| `Enter` | send a message / activate the highlighted item / select a choice |
+| `Enter` | send; accept a Tab-highlighted completion without sending |
+| `Shift+Enter` / `Alt+Enter` | insert a newline in the three-row wrapping prompt |
+| `Tab` / `Shift+Tab` | choose or cycle completions forward / backward |
+| `Alt+↑` / `Alt+↓` | browse input history, preserving your unfinished draft |
+| `↑` / `↓` | history at single-line buffer boundaries; otherwise move the cursor |
+| `PageUp` / `PageDown` | scroll the transcript (panes) |
 | `j` / `k` | move down / up through choices and menus |
 | `h` / `l` | back / forward in menus; `l` selects a choice |
 | `g` / `G` | jump to the top / bottom of a menu |
-| `Esc` | close the menu, or clear a half-typed message |
-| `Ctrl+P` | model, thinking and settings menu |
+| `Esc` | close a menu; otherwise interrupt active work or dismiss completion — never erase a draft |
+| `Ctrl+P` | command palette in REPL; settings menu in panes |
 | `Ctrl+T` | toggle closed-frame history in the task pane |
 | `Ctrl+C` | quit |
 
@@ -77,13 +82,13 @@ Contrast comes from **hierarchy**, not from hardcoded colours:
 
 - Panes use dim (`ANSI 8`) borders and in-content headers with full-width rules;
   the chat border turns blue while working and yellow when it needs you.
-- Roles are marked with a coloured left bar `▌` (green You, cyan Agent, magenta
-  Thinking); tool calls and output are dimmed behind a `│` gutter, so the
-  conversation stands out from the noise.
+- `▌` marks **user messages only**; agent prose is unmarked. `✻` marks thinking,
+  `→` marks tool calls, and `│` is the thin gutter for secondary output.
+  Neutral command output is not styled as a warning.
 - Long text is hard-wrapped with the same indent on every line, so nothing turns
   ragged.
 - The footer is a single line: a reverse-video mode chip, dim metadata, and a
-  plain status hint — the only inverted element on screen.
+  contextual keyboard hint. Completion and menu selections also use reverse video.
 - Semantic colours are ANSI palette indices (red/green/yellow/blue/magenta/cyan),
   so they follow the terminal's own theme.
 
@@ -94,60 +99,62 @@ Two interfaces share the same runtime and can be switched at runtime:
 - **REPL** (default) — output flows into the terminal's real scrollback, and a
   pinned footer shows the live status, the current task, the context files and the
   prompt, like a shell.
-- **Panes** (`--ui panes`) — a fixed three-pane alternate-screen layout.
+- **Panes** (`--ui panes`) — an alternate-screen layout that adapts to the terminal:
+  three columns at 116+ columns, task + chat at 84–115, chat only below 84.
+  `/task` and `/files` expose the full context even when sidebars are hidden.
 
 The REPL footer is the always-visible state surface:
 
 ```
 stacky  ·  REPL mode. Type a task, or /help for commands.
-▌ You
-  fix the failing test
-▌ Thinking
-  │ The failure is in the token parser, so I should read it first.
-  → read  src/token.ts
-▌ token.ts · 84 lines · ~900 tokens · now in the working set
-  Fixed it. Tests pass.
+▌ fix the failing test
+✻ Thinking
+│ The failure is in the token parser, so I should read it first.
+→ read  src/token.ts
+│ token.ts · 84 lines
 
 TASK   Fix token expiry parsing
-WHY    The auth test fails only when refresh tokens are expired.
-SCOPE  Inspect timestamp parsing and normalization only.
-DONE   Determine whether parsing is responsible, with evidence for the parent frame.
-TODO   ✓ Read the token parser
-       ✓ Reproduce the failure
-       · Fix the expiry comparison
-FILES  src/token.ts 1.2k   tests/token.test.ts 5.8k
+·      Fix the expiry comparison
+FILES  2 · 7.0k / 24.0k tokens · src/token.ts · tests/token.test.ts
 ❯ _
- EXECUTE   deepseek/deepseek-flash · llm 6 · tools 5 · depth 1 · files 2   ctrl+c quit · Esc interrupts · /help
+
+
+ READY   deepseek/deepseek-flash   Tab complete · ⇧Enter newline · /help
 ```
 
 Above the dashboard sits a two-row **history stripe**: one cell per *resolved* frame
 (title + outcome). The open stack is the dashboard's job, so nothing is shown twice.
 
-The dashboard is one unified panel: the top task frame (`TASK` = its title, then
-`WHY`/`SCOPE`/`DONE`/`TODO`, plus `STACK` when nested) with the file working set
-listed underneath; the prompt and the status bar sit below it (status last). Agent messages carry no role marker — the agent
-is the default voice, and the user's green bar + tint is what marks your turns.
+The dashboard shows the task title, pending checklist, parent stack and file
+summary. It is bounded to a third of the terminal, with an explicit overflow
+hint; `/task` shows the full Why/Scope/Known/Done/checklist and `/files` lists every
+context path. Empty sections disappear, and `/dashboard off` hides the entire
+panel. The three-row prompt is stable; only completion temporarily expands it.
 
 The status bar leads with a compact **state chip** — `READY` (idle at the prompt),
 `PLAN` (framing), `RUN` (executing), `THINK` (streaming reasoning), `WRITE` (streaming
 answer), `TOOL <name> <elapsed>` (running a tool), `WAIT ·choice|·reply` (needs you) — and it
 shows elapsed seconds / tokens-per-second while a phase runs. The status meta is
-deliberately small (model · llm · tools): depth, files and todo progress live in the
-dashboard, so no fact appears in two places. Each coloured chip uses an **explicit contrasting fg/bg
+deliberately small (model and reasoning setting); `/status` owns call counters. Each coloured chip uses an **explicit contrasting fg/bg
 pair** (dark text on bright bars, bright-white text on dark bars) so it reads well on
 any theme; `READY`/`IDLE` invert the terminal's own fg/bg. Long command output streams
-live under the prompt while `bash` runs. Values **wrap**
-rather than being clipped, and the panel height grows with the content (collapse it
-with `/dashboard off`). `--ui` can switch to the panes interface.
+live above the prompt while `bash` runs. The status line and dashboard summaries
+fit the available width instead of pushing controls offscreen.
 
-REPL keys: `↑`/`↓` recall previous inputs; `j`/`k`/`l` move and select the choice
-list when the agent asks a question (while the prompt is empty); `Esc` interrupts the
-in-flight model call (or clears a half-typed line); everything else is ordinary
-typing. Slash commands replace the settings menu:
+Both interfaces use the same composer. Typing `/` shows command descriptions;
+command arguments complete too. Type `/model sonnet` to filter across providers,
+then Tab to choose and Enter to accept. A second Enter runs the command (a unique
+Tab match fills immediately, so only one Enter is needed). Model
+lists refresh in the background, with cached/unverified/authentication labels.
+Busy submission keeps your draft rather than discarding it. In the REPL,
+`Ctrl+P` opens a command palette and restores your draft on Escape or after a
+command runs. Slash commands include:
 
 ```
 /help                 list commands
-/model [provider/id]  show or choose a model
+/model [provider/id]  show or choose a model; /model refresh forces discovery
+/task                 full task stack and checklist
+/files                all context files
 /thinking [on|off]    toggle the model's reasoning mode
 /thinking-blocks      toggle thinking display
 /status               runtime status
@@ -219,7 +226,7 @@ The model is called with `streamText`, so the UI updates as the model works:
 
 ## Settings, models and config
 
-Press `Ctrl+P` for the settings menu (vim keys: `j`/`k` move, `l`/Enter select,
+In panes, press `Ctrl+P` for the settings menu (vim keys: `j`/`k` move, `l`/Enter select,
 `h` back, `g`/`G` jump, `Esc` close):
 
 ```
@@ -235,8 +242,11 @@ Settings
   Quit
 ```
 
-The **Model** submenu lists every catalogued model across providers; selecting one
-rebuilds the LLM client immediately. `Thinking` maps to the provider-agnostic
+The **Model** submenu groups models by provider. Opening a provider fetches its
+list with a visible loading state; errors remain in the menu rather than closing
+it. Cached or unverified fallback lists are labelled. Selecting a model rebuilds
+the client and persists the choice. Switching during a turn is refused without
+mutating settings; missing credentials and failed switches have actionable errors. `Thinking` maps to the provider-agnostic
 `reasoning` setting (`'none'` vs `'provider-default'`); DeepSeek V4 models think by
 default, so it is disabled explicitly unless you turn it on.
 
@@ -266,7 +276,7 @@ stacky
 `/model` asks each provider for *its* model list (including the ChatGPT backend
 under OAuth), ranks known ids first, and caches the result in memory and in
 `~/.config/stacky/models.json` for 10 minutes. Each provider is labelled with
-where its list came from — live, `cached`, `built-in list`, or `not signed in` —
+where its list came from — provider, cached, unverified fallback, or missing credentials —
 so you can tell fresh from stale. `/model refresh` forces a re-fetch; the
 built-in catalog is only used when a provider is unreachable.
 
@@ -276,7 +286,7 @@ built-in catalog is only used when a provider is unreachable.
 --task <text>              initial task
 --mock                     offline demo model (no API key)
 --headless                 stream events to stdout instead of the TUI
---provider <name>          openai | anthropic | deepseek (default: deepseek)
+--provider <name>          openai | anthropic | deepseek | chatgpt (default: deepseek)
 --model <id>               model id override (default: deepseek-flash)
 --thinking                 keep the model's reasoning mode on (forces toolChoice auto)
 --cwd <path>               workspace root (default: cwd)

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentRuntime } from "../src/agent/runtime.ts"
-import { ScriptedLLM, type ScriptStep } from "../src/llm/scripted.ts"
+import { DemoLLM, ScriptedLLM, type ScriptStep } from "../src/llm/scripted.ts"
 
 let dir: string
 beforeEach(() => {
@@ -21,6 +21,19 @@ function runtimeWith(steps: ScriptStep[]) {
 }
 
 describe("frame todos", () => {
+  test("offline demo resolves its checklist before closing the survey", async () => {
+    mkdirSync(join(dir, "src"))
+    writeFileSync(join(dir, "package.json"), '{"name":"demo"}')
+    const runtime = new AgentRuntime({ cwd: dir, llm: new DemoLLM() })
+    await runtime.request("survey")
+    expect(runtime.snapshot().mode).toBe("waiting_for_user")
+    await runtime.request("Stop here")
+    const snapshot = runtime.snapshot()
+    expect(snapshot.stack).toHaveLength(0)
+    expect(snapshot.closedFrames).toHaveLength(1)
+    expect(snapshot.conversation.some((entry) => entry.role === "protocol")).toBe(false)
+  })
+
   test("pop is refused while a todo is still pending", async () => {
     const runtime = runtimeWith([
       { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["one", "two"] } },

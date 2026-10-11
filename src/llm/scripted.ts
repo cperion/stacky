@@ -53,13 +53,15 @@ export class DemoLLM implements LLMClient {
         return {
           tool: "push",
           input: {
+            title: "Survey the repository",
             why: "The user asked the agent to inspect this repository and report its structure.",
             scope:
               "Survey the repository at the workspace root: top-level files, package manifest, and source layout. " +
               "Do not modify any file.",
             knownContext: "The workspace is a fresh Bun + TypeScript project called stacky.",
             definitionOfDone:
-              "A concise, evidence-backed summary of the repository structure has been produced and the user has been asked whether to continue.", todos: ["step one"],
+              "A concise, evidence-backed summary of the repository structure has been produced and the user has been asked whether to continue.",
+            todos: ["Inspect the repository and ask for direction"],
           },
         }
       case 2:
@@ -88,6 +90,8 @@ export class DemoLLM implements LLMClient {
       case 5:
         return { tool: "bash", input: { command: "echo 'acknowledged'; date -u +%Y-%m-%dT%H:%M:%SZ" } }
       case 6:
+        return { tool: "todo", input: { index: 1, status: "done" } }
+      case 7:
         return {
           tool: "pop",
           input: {
@@ -98,7 +102,7 @@ export class DemoLLM implements LLMClient {
             effectsOnParent: "None — this was the root frame.",
           },
         }
-      case 7:
+      case 8:
         return {
           tool: "user",
           input: {
