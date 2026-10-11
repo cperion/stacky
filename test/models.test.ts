@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { MODEL_CATALOG } from "../src/llm/catalog.ts"
@@ -7,6 +7,7 @@ import { cachedModels, clearModelCache, listModels, parseModelIds, rankModels } 
 
 let dir: string | undefined
 const originalFetch = globalThis.fetch
+const originalEnv = { STACKY_MODELS: process.env.STACKY_MODELS, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
 
 function isolate(): void {
   dir = mkdtempSync(join(tmpdir(), "stacky-models-"))
@@ -15,8 +16,10 @@ function isolate(): void {
 }
 afterEach(() => {
   globalThis.fetch = originalFetch
-  delete process.env.STACKY_MODELS
-  delete process.env.OPENAI_API_KEY
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   clearModelCache()
   if (dir) rmSync(dir, { recursive: true, force: true })
   dir = undefined
@@ -90,6 +93,28 @@ describe("listModels", () => {
     const result = await listModels("openai", { force: true })
     expect(result.source).toBe("cache")
     expect(result.ids).toEqual(["gpt-4.1"])
+    expect(result.stale).toBe(true)
+    expect(result.error).toContain("unreachable")
+  })
+
+  test("fresh disk entries are cached, not claimed to be live", async () => {
+    isolate()
+    writeFileSync(process.env.STACKY_MODELS!, JSON.stringify({ openai: { ids: ["from-disk"], at: Date.now() } }))
+    let calls = 0
+    globalThis.fetch = (async () => { calls++; throw new Error("must not fetch") }) as unknown as typeof fetch
+    const result = await listModels("openai")
+    expect(result.source).toBe("cache")
+    expect(result.stale).toBe(false)
+    expect(result.ids).toEqual(["from-disk"])
+    expect(calls).toBe(0)
+  })
+
+  test("malformed disk entries cannot crash completion", () => {
+    isolate()
+    writeFileSync(process.env.STACKY_MODELS!, '{"openai":{"ids":[null,42],"at":123}}')
+    expect(cachedModels("openai")).toEqual(MODEL_CATALOG.openai)
+    writeFileSync(process.env.STACKY_MODELS!, 'null')
+    expect(cachedModels("openai")).toEqual(MODEL_CATALOG.openai)
   })
 
   test("uses the built-in catalog only as a last resort", async () => {

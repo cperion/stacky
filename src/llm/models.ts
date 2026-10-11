@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { MODEL_CATALOG } from "./catalog.ts"
+import { MODEL_CATALOG, PROVIDERS } from "./catalog.ts"
 import { CHATGPT_BASE_URL, ensureFreshAuth } from "./oauth.ts"
 import { apiKeyEnvName, type ProviderName } from "./providers.ts"
 
@@ -13,7 +13,7 @@ import { apiKeyEnvName, type ProviderName } from "./providers.ts"
 const TTL_MS = 10 * 60 * 1000
 
 export type ModelSource = "api" | "cache" | "catalog"
-export type ModelList = { ids: string[]; source: ModelSource }
+export type ModelList = { ids: string[]; source: ModelSource; checkedAt?: number; stale?: boolean; error?: string }
 
 type Entry = { ids: string[]; at: number }
 const memory = new Map<ProviderName, Entry>()
@@ -31,7 +31,16 @@ function diskPath(): string {
 
 function readDisk(): Partial<Record<ProviderName, Entry>> {
   try {
-    return JSON.parse(readFileSync(diskPath(), "utf8")) as Partial<Record<ProviderName, Entry>>
+    const parsed: unknown = JSON.parse(readFileSync(diskPath(), "utf8"))
+    const valid: Partial<Record<ProviderName, Entry>> = {}
+    if (!parsed || typeof parsed !== "object") return valid
+    for (const provider of PROVIDERS) {
+      const entry = (parsed as Record<string, Partial<Entry> | null>)[provider]
+      if (entry && typeof entry.at === "number" && Number.isFinite(entry.at) && Array.isArray(entry.ids) && entry.ids.length > 0 && entry.ids.every((id) => typeof id === "string" && id.length > 0)) {
+        valid[provider] = { ids: entry.ids, at: entry.at }
+      }
+    }
+    return valid
   } catch {
     return {}
   }
@@ -103,11 +112,13 @@ async function headersFor(provider: ProviderName): Promise<Record<string, string
 
 export async function listModels(provider: ProviderName, options: { force?: boolean } = {}): Promise<ModelList> {
   const now = Date.now()
-  if (!options.force) {
-    const cached = memory.get(provider)
-    if (cached && now - cached.at < TTL_MS) return { ids: cached.ids, source: "api" }
+  const cached = memory.get(provider) ?? readDisk()[provider]
+  if (!options.force && cached && now >= cached.at && now - cached.at < TTL_MS) {
+    memory.set(provider, cached)
+    return { ids: cached.ids, source: "cache", checkedAt: cached.at, stale: false }
   }
 
+  let error = "Not authenticated"
   const endpoint = ENDPOINTS[provider]
   const headers = await headersFor(provider)
   if (endpoint && headers) {
@@ -119,17 +130,17 @@ export async function listModels(provider: ProviderName, options: { force?: bool
           const entry: Entry = { ids: rankModels(provider, ids), at: now }
           memory.set(provider, entry)
           writeDisk(provider, entry)
-          return { ids: entry.ids, source: "api" }
+          return { ids: entry.ids, source: "api", checkedAt: now, stale: false }
         }
-      }
+        error = "No models in the provider response"
+      } else error = `Provider returned HTTP ${response.status}`
     } catch {
-      // Offline / blocked: use the last known list.
+      error = "Provider unreachable or returned an invalid response"
     }
   }
 
-  const disk = readDisk()[provider]
-  if (disk && Array.isArray(disk.ids) && disk.ids.length > 0) return { ids: disk.ids, source: "cache" }
-  return { ids: MODEL_CATALOG[provider], source: "catalog" }
+  if (cached) return { ids: cached.ids, source: "cache", checkedAt: cached.at, stale: true, error }
+  return { ids: MODEL_CATALOG[provider], source: "catalog", error }
 }
 
 /** Sync view for menus and tab completion: memory -> disk -> catalog. */

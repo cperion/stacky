@@ -43,6 +43,12 @@ describe("config store", () => {
     expect(loadConfig(path).provider).toBe("openai")
   })
 
+  test("preserves the OAuth provider when model ids overlap with OpenAI", () => {
+    const path = tempPath()
+    saveConfig({ ...defaultConfig(), provider: "chatgpt", model: "gpt-5" }, path)
+    expect(loadConfig(path).provider).toBe("chatgpt")
+  })
+
   test("falls back to defaults on malformed JSON", () => {
     const path = tempPath()
     saveConfig(defaultConfig(), path)

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { ProviderName } from "./llm/providers.ts"
-import { defaultModelFor, providerForModel } from "./llm/catalog.ts"
+import { defaultModelFor, MODEL_CATALOG, providerForModel } from "./llm/catalog.ts"
 
 export type StackyConfig = {
   provider: ProviderName
@@ -49,7 +49,8 @@ export function loadConfig(path = configPath()): StackyConfig {
     const merged: StackyConfig = { ...defaults, ...parsed }
     // Keep provider/model consistent even if the file is hand-edited.
     const providerFromModel = providerForModel(merged.model)
-    if (providerFromModel) merged.provider = providerFromModel
+    // Shared ids (e.g. gpt-5) must preserve an explicit ChatGPT OAuth selection.
+    if (providerFromModel && !MODEL_CATALOG[merged.provider]?.includes(merged.model)) merged.provider = providerFromModel
     if (!merged.model) merged.model = defaultModelFor(merged.provider)
     return merged
   } catch {
