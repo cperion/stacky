@@ -261,6 +261,15 @@ stacky
   `api.openai.com` — no API key is needed or used. `chatgpt` is a provider like
   any other, so `/model`, tab completion and `--provider chatgpt` all work.
 
+### Model lists are fetched, not hardcoded
+
+`/model` asks each provider for *its* model list (including the ChatGPT backend
+under OAuth), ranks known ids first, and caches the result in memory and in
+`~/.config/stacky/models.json` for 10 minutes. Each provider is labelled with
+where its list came from — live, `cached`, `built-in list`, or `not signed in` —
+so you can tell fresh from stale. `/model refresh` forces a re-fetch; the
+built-in catalog is only used when a provider is unreachable.
+
 ## CLI
 
 ```

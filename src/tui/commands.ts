@@ -33,21 +33,30 @@ const COMMANDS: Command[] = [
   {
     name: "model",
     aliases: ["models"],
-    usage: "/model [provider/id]",
+    usage: "/model [provider/id|refresh]",
     description: "show or choose a model",
     run: async (arg, ctx) => {
-      if (!arg) {
-        const lines = [`Current: ${ctx.runtime.llmLabel}`, ""]
+      const trimmed = arg.trim()
+      if (!trimmed || trimmed === "refresh") {
+        const force = trimmed === "refresh"
+        const lines = [`Current: ${ctx.runtime.llmLabel}${force ? "  · refreshing…" : ""}`, ""]
         for (const provider of PROVIDERS) {
-          const models = await listModels(provider)
-          lines.push(`${provider}${hasApiKey(provider) ? "" : "  (no API key)"}:`)
-          for (const model of models.slice(0, 40)) {
+          const { ids, source } = await listModels(provider, { force })
+          const note = !hasApiKey(provider)
+            ? "  (not signed in)"
+            : source === "cache"
+              ? "  (cached)"
+              : source === "catalog"
+                ? "  (built-in list)"
+                : ""
+          lines.push(`${provider}${note}:`)
+          for (const model of ids.slice(0, 50)) {
             const current = ctx.settings.config.provider === provider && ctx.settings.config.model === model
             lines.push(`  ${current ? "❯" : " "} ${model}`)
           }
-          if (models.length > 40) lines.push(`    … ${models.length - 40} more`)
+          if (ids.length > 50) lines.push(`    … ${ids.length - 50} more`)
         }
-        lines.push("", "Switch with /model <provider>/<model>")
+        lines.push("", "Switch with /model <provider>/<model> · refresh with /model refresh")
         ctx.print(lines.join("\n"))
         return
       }
