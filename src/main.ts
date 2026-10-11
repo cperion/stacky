@@ -8,6 +8,7 @@ import { buildLLM } from "./llm/factory.ts"
 import { DemoLLM } from "./llm/scripted.ts"
 import { configPath, loadConfig, saveConfig, type StackyConfig } from "./config.ts"
 import type { ProviderName } from "./llm/providers.ts"
+import { defaultModelFor, PROVIDERS } from "./llm/catalog.ts"
 import { runApp } from "./tui/app.ts"
 import { runRepl } from "./tui/repl.ts"
 import type { SettingsController, UiResult } from "./tui/settings.ts"
@@ -43,7 +44,15 @@ const cwd = resolve(values.cwd ?? process.cwd())
 
 // Config file first, then CLI overrides.
 const config: StackyConfig = loadConfig(values.config ? resolve(values.config) : configPath())
-if (values.provider) config.provider = values.provider as ProviderName
+if (values.provider) {
+  const provider = values.provider as ProviderName
+  if (!PROVIDERS.includes(provider)) {
+    console.error(`Unknown provider "${values.provider}". Choose ${PROVIDERS.join(" | ")}.`)
+    process.exit(2)
+  }
+  if (provider !== config.provider && !values.model) config.model = defaultModelFor(provider)
+  config.provider = provider
+}
 if (values.model) config.model = values.model
 if (values.thinking !== undefined) config.thinking = values.thinking
 if (values.ui === "panes" || values.ui === "repl") config.ui = values.ui
@@ -219,13 +228,13 @@ function printHelp(): void {
   console.log(`stacky — a stack-driven LLM coding agent
 
 Usage:
-  bun run src/main.ts [task] [options]
+  stacky [task] [options]
 
 Options:
   --task <text>            Initial task to give the agent
   --mock                   Use the offline demo model (no API key needed)
   --headless               Run without the TUI (streams events to stdout)
-  --provider <name>        openai | anthropic | deepseek (default: deepseek)
+  --provider <name>        openai | anthropic | deepseek | chatgpt (default: deepseek)
   --model <id>             Model id override (default: deepseek-flash)
   --thinking               Keep the model's reasoning mode on (forces toolChoice auto)
   --cwd <path>             Workspace root (default: current directory)
@@ -245,7 +254,11 @@ Environment:
 Keys (TUI):
   Enter       send message / choose highlighted option / activate menu item
   ↑ / ↓       move through choices, menus and history
-  Ctrl+P      model, thinking and settings menu
+  Tab / Shift+Tab   choose/cycle completions
+  Shift+Enter / Alt+Enter   insert a newline
+  Alt+↑ / Alt+↓     input history, preserving your draft
+  PageUp/Down      scroll chat (panes)
+  Ctrl+P      command palette (REPL) / settings (panes)
   Ctrl+T      toggle closed-frame history in the task pane
   Esc / ←     close or step back in a menu
   Ctrl+C      quit
@@ -255,8 +268,11 @@ REPL mode (default; --ui repl):
   task, the context files and the prompt.
   ↑ / ↓       recall previous inputs
   j / k / l   move/select the choice list when the agent asks (prompt empty)
-  Esc         interrupt the in-flight model call, or clear the line
-  /help       list commands (/model, /thinking, /status, /new, /ui panes, /quit)
+  Esc         interrupt active work or dismiss completion; keep the draft
+  /help       list commands and keyboard shortcuts
+  /model      browse models; add a name to filter completions
+  /task       full task stack and checklist
+  /files      context files
 
 Defaults:
   provider    deepseek (falls back to whichever API key is set)

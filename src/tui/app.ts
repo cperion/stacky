@@ -7,9 +7,9 @@ import { FilePane } from "./file-pane.ts"
 import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { concat, plain } from "./render.ts"
+import { concat } from "./render.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
-import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
+import { renderStatusLine, TOOL_FLASH_MS } from "./status.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 
 export type AppOptions = {
@@ -19,7 +19,6 @@ export type AppOptions = {
   notice?: string
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const RENDER_INTERVAL_MS = 33
 const SPINNER_INTERVAL_MS = 90
 
@@ -59,7 +58,11 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
 
   const taskPane = new TaskPane(renderer, { width: "26%" })
   let selectedChoice = 0
-  const chatPane = new ChatPane(renderer, { onSubmit: (text) => handleSubmit(text) })
+  const chatPane = new ChatPane(renderer, {
+    onSubmit: (text) => handleSubmit(text),
+    canSubmit: (text) => text.trim().startsWith("/") || !opts.runtime.isRunning || opts.runtime.snapshot().mode === "waiting_for_user",
+    provider: () => opts.settings.config.provider,
+  })
   const filePane = new FilePane(renderer, { width: "26%" })
   const footer = new TextRenderable(renderer, {
     content: "",
@@ -79,11 +82,20 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   renderer.root.add(outer)
 
   let showHistory = false
-  let spin = 0
+  let disposed = false
+
+  const layout = () => {
+    // Keep the conversation usable instead of squeezing three columns onto a phone-sized terminal.
+    taskPane.box.visible = renderer.width >= 84
+    filePane.box.visible = renderer.width >= 116
+    taskPane.box.width = renderer.width >= 116 ? "26%" : "32%"
+    chatPane.composer.refresh()
+  }
 
   // --- rendering -------------------------------------------------------------
 
   const render = () => {
+    if (renderer.isDestroyed) return
     const state = opts.runtime.snapshot()
     taskPane.update(state, showHistory)
     chatPane.update(state, selectedChoice, opts.settings.config.showThinking)
@@ -99,7 +111,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
       thinking: opts.settings.config.thinking,
       showHistory,
       notice: opts.notice,
-      spinner: SPINNER[spin % SPINNER.length] ?? "…",
+      width: renderer.width,
     })
     footer.content = line
   }
@@ -110,7 +122,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     renderPending = true
     setTimeout(() => {
       renderPending = false
-      render()
+      if (!disposed) render()
     }, RENDER_INTERVAL_MS)
   }
 
@@ -118,8 +130,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   const spinnerTimer = setInterval(() => {
     const state = opts.runtime.snapshot()
     const flashing = state.lastTool !== undefined && Date.now() - state.lastTool.at < TOOL_FLASH_MS
-    if (state.streaming?.active || state.mode === "execute" || flashing || wasFlashing) {
-      spin += 1
+    if (state.running || flashing || wasFlashing) {
       requestRender()
     }
     wasFlashing = flashing
@@ -250,35 +261,45 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
       }
       if (activate) {
         await menu.activate()
-        if (!menu.isOpen) chatPane.focus()
+        if (!menu.isOpen && !renderer.isDestroyed) chatPane.focus()
         render()
         return
       }
       if (backward) {
         menu.back()
-        if (!menu.isOpen) chatPane.focus()
+        if (!menu.isOpen && !renderer.isDestroyed) chatPane.focus()
         render()
         return
       }
       return
     }
 
-    // Esc interrupts the in-flight model call, else clears a half-typed message.
+    if (key.name === "escape" && opts.runtime.isRunning) {
+      key.preventDefault()
+      key.stopPropagation()
+      opts.runtime.interrupt()
+      render()
+      return
+    }
+    if (key.name === "pageup" || key.name === "pagedown") {
+      chatPane.scrollPage(key.name === "pageup" ? -1 : 1)
+      key.preventDefault()
+      key.stopPropagation()
+      return
+    }
+    if (chatPane.input.plainText.length > 0 && chatPane.composer.handleKey(key)) return
+
+    // An idle Escape dismisses overlays without deleting the draft.
     if (key.name === "escape") {
       key.preventDefault()
       key.stopPropagation()
-      if (opts.runtime.isRunning) {
-        opts.runtime.interrupt()
-      } else if (chatPane.input.value.length > 0) {
-        chatPane.input.value = ""
-      }
       render()
       return
     }
 
     const snapshot = opts.runtime.snapshot()
     const choiceActive = snapshot.mode === "waiting_for_user" && (snapshot.userRequest?.choices?.length ?? 0) > 0
-    const inputEmpty = chatPane.input.value.length === 0
+    const inputEmpty = chatPane.input.plainText.length === 0
 
     // Vim motions drive the choice list while the chat input is empty; once the
     // user starts typing, characters belong to the input (freeform replies).
@@ -303,6 +324,8 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
       }
     }
 
+    if (inputEmpty && chatPane.composer.handleKey(key)) return
+
     if (key.ctrl && key.name === "p") {
       setMenuOpen(true)
       key.preventDefault()
@@ -320,7 +343,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     }
   })
 
-  opts.runtime.bus.on((event) => {
+  const unsubscribe = opts.runtime.bus.on((event) => {
     if (event.type === "user.request") {
       selectedChoice = preferredIndex()
       requestRender()
@@ -330,22 +353,27 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   })
 
   renderer.on("resize", () => {
+    layout()
     menu.relayout()
     requestRender()
   })
 
+  layout()
   render()
   chatPane.focus()
 
   // Box widths are only known after the first layout pass; re-render once so
   // text wrapping uses the real pane widths instead of the fraction fallback.
-  setTimeout(() => render(), 60)
+  setTimeout(() => { if (!disposed) { layout(); render() } }, 60)
 
   if (opts.initialTask) {
     void submit(opts.initialTask)
   }
 
   await done
+  disposed = true
+  unsubscribe()
+  chatPane.composer.dispose()
   return result
 }
 
@@ -356,33 +384,11 @@ function buildFooter(
     thinking: boolean
     showHistory: boolean
     notice: string | undefined
-    spinner: string
+    width: number
   },
 ): ReturnType<typeof concat> {
   if (opts.notice && state.conversation.length === 0) return concat([dim(` ${opts.notice}`)])
 
-  const busy = state.streaming?.active === true
-  const m = state.metrics
-  const meta = `${opts.label}${opts.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
-  const status = busy ? `${opts.spinner} thinking…` : statusHint(state)
-
-  return concat([
-    renderChip(statusChip(state)),
-    plain("  "),
-    dim(meta),
-    plain("   "),
-    plain(status),
-    opts.showHistory ? dim("  · history") : plain(""),
-  ])
-}
-
-function statusHint(state: AgentState): string {
-  switch (state.mode) {
-    case "waiting_for_user":
-      return "waiting for you · j/k choose · l/Enter select"
-    case "push":
-      return "type a task · Ctrl+P settings · Ctrl+T history · Ctrl+C quit"
-    default:
-      return "working… · Ctrl+C quit"
-  }
+  const hint = state.running ? "Esc stop" : opts.width >= 100 ? "Tab complete · Ctrl+P settings · /help" : "/help"
+  return renderStatusLine(state, opts.label, opts.width - 1, opts.thinking, hint + (opts.showHistory ? " · history" : ""))
 }

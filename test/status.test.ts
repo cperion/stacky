@@ -59,6 +59,11 @@ describe("statusChip", () => {
     expect(statusChip(text).label).toBe("WRITE")
   })
 
+  test("writing takes over from buffered reasoning", () => {
+    const mixed = state({ running: true, streaming: { active: true, reasoning: "earlier thoughts", text: "answer", startedAt: 1000 } })
+    expect(statusChip(mixed).label).toBe("WRITE")
+  })
+
   test("active tool wins over the running phase", () => {
     expect(statusChip(state({ running: true, activeTool: "bash" })).label).toBe("TOOL bash")
   })

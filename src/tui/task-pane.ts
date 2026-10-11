@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { AgentState, ClosedFrame, TaskFrame } from "../agent/types.ts"
 import { theme, scrollbarOptions } from "./theme.ts"
-import { concat, block, header, headerWith, paneRule, paneInner, plain, type Dimension, type Part } from "./render.ts"
+import { concat, block, header, paneRule, paneInner, plain, type Dimension, type Part } from "./render.ts"
 
 export class TaskPane {
   readonly box: BoxRenderable
@@ -50,20 +50,12 @@ export class TaskPane {
     const parts: Part[] = []
     const waiting = state.mode === "waiting_for_user"
 
-    if (waiting) {
-      parts.push(
-        headerWith("TASK STACK", bold(fg(theme.yellow)("waiting for user")), "waiting for user".length, width),
-      )
-    } else {
-      parts.push(header("TASK STACK", `depth ${state.stack.length} · ${state.mode}`, width))
-    }
+    parts.push(header("TASK", state.stack.length > 1 ? `${state.stack.length} frames` : "", width))
     parts.push(plain("\n"), paneRule(width), plain("\n"))
 
     if (!top) {
       parts.push(plain("\n"))
-      parts.push(dim("No active frame."))
-      parts.push(plain("\n\n"))
-      parts.push(dim("Describe a task below and the agent will push a frame."))
+      parts.push(dim("No active task."))
     } else {
       parts.push(plain("\n"))
       parts.push(...this.renderTop(top, waiting, width))
@@ -76,13 +68,12 @@ export class TaskPane {
     }
 
     this.text.content = concat(parts)
-    this.scroll.scrollTop = 0
   }
 
   private renderTop(frame: TaskFrame, waiting: boolean, width: number): Part[] {
     const color = waiting ? theme.yellow : theme.blue
     const parts: Part[] = [
-      t`${fg(color)("▶")} ${bold(fg(color)("TOP FRAME"))}  ${dim(frame.id)}`,
+      concat([fg(color)("› "), bold(frame.title)]),
       plain("\n\n"),
     ]
     parts.push(...this.field("Why", frame.why, width))

@@ -1,7 +1,7 @@
-import { bg, bold, fg, reverse, type ColorInput } from "@opentui/core"
+import { bg, bold, dim, fg, reverse, type ColorInput } from "@opentui/core"
 import type { AgentState } from "../agent/types.ts"
 import { theme } from "./theme.ts"
-import type { Part } from "./render.ts"
+import { clipText, concat, plain, type Part } from "./render.ts"
 
 /** How long a finished tool's ✓/✗ result stays attached to the chip. */
 export const TOOL_FLASH_MS = 1200
@@ -40,15 +40,17 @@ function derivePhase(state: AgentState, now: number): Chip {
     return { label: `WAIT ${reason}`, ...theme.chip.yellow }
   }
 
-  if (state.streaming?.reasoning) {
-    const chip: Chip = { label: "THINK", ...theme.chip.magenta }
-    if (state.running) appendElapsed(chip, state.streaming.reasoningStartedAt, now)
-    return chip
-  }
-
+  // Reasoning stays in the stream buffer after writing starts; it must not
+  // pin the phase to THINK for the remainder of a reasoning model's answer.
   if (state.streaming?.text) {
     const chip: Chip = { label: "WRITE", ...theme.chip.blue }
     if (state.running) appendThroughput(chip, state.streaming.text, state.streaming.textStartedAt, now)
+    return chip
+  }
+
+  if (state.streaming?.reasoning) {
+    const chip: Chip = { label: "THINK", ...theme.chip.magenta }
+    if (state.running) appendElapsed(chip, state.streaming.reasoningStartedAt, now)
     return chip
   }
 
@@ -72,6 +74,21 @@ function appendThroughput(chip: Chip, text: string, since: number | undefined, n
   const seconds = (now - since) / 1000
   if (seconds < 0.6) return
   chip.label += ` ${Math.max(0, Math.round(text.length / 4 / seconds))} t/s`
+}
+
+/** One home for phase, model and contextual keyboard help, bounded to the terminal. */
+export function renderStatusLine(state: AgentState, label: string, width: number, thinking = false, hint?: string): ReturnType<typeof concat> {
+  const chip = statusChip(state)
+  chip.label = clipText(chip.label, Math.max(1, width - 2))
+  const remaining = Math.max(0, width - chip.label.length - 4)
+  const help = hint ?? (state.running ? "Esc stop" : width >= 100 ? "Tab complete · ⇧Enter newline · /help" : "/help")
+  const helpWidth = remaining > help.length + 24 ? help.length + 3 : 0
+  const model = clipText(`${label}${thinking ? " · thinking" : ""}`, remaining - helpWidth)
+  return concat([
+    renderChip(chip),
+    ...(remaining > 0 ? [plain("  "), dim(model)] : []),
+    ...(helpWidth ? [plain("   "), dim(help)] : []),
+  ])
 }
 
 export function renderChip(chip: Chip): Part {

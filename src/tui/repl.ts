@@ -4,7 +4,6 @@ import {
   createCliRenderer,
   dim,
   fg,
-  TextareaRenderable,
   italic,
   StyledText,
   TextRenderable,
@@ -12,13 +11,12 @@ import {
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
 import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, concat, fit, formatTokens, plain, prefixLines, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, clipText, concat, fit, formatTokens, plain, prefixLines, quoteBlock, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
-import { renderChip, statusChip, TOOL_FLASH_MS } from "./status.ts"
+import { renderStatusLine, TOOL_FLASH_MS } from "./status.ts"
 import { historyStripe } from "./history.ts"
-import { completeInput } from "./complete.ts"
-import { cachedModels } from "../llm/models.ts"
+import { Composer } from "./composer.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -35,8 +33,6 @@ export type ReplOptions = {
  * compact status + prompt footer stays pinned at the bottom. Slash commands
  * replace the settings menu.
  */
-export const PROMPT_HEIGHT = 3
-
 export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   let result: UiResult = "quit"
   let resolveDone: (value: UiResult) => void = () => {}
@@ -67,44 +63,17 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const historyLine = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const dashboard = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 0 })
   const live = new TextRenderable(renderer, { content: "", fg: theme.fg, bg: theme.bg, wrapMode: "none", height: 1 })
-  const promptRow = new BoxRenderable(renderer, { width: "100%", height: PROMPT_HEIGHT, flexDirection: "row" })
-  promptRow.add(
-    new TextRenderable(renderer, {
-      content: concat([fg(theme.green)("❯ ")]),
-      fg: theme.fg,
-      bg: theme.bg,
-      wrapMode: "none",
-      width: 2,
-    }),
-  )
-  const input = new TextareaRenderable(renderer, {
-    placeholder: "message, or /help   (shift+enter for a new line)",
-    height: PROMPT_HEIGHT,
-    wrapMode: "word",
-    backgroundColor: theme.bg,
-    focusedBackgroundColor: theme.bg,
-    textColor: theme.fg,
-    focusedTextColor: theme.fg,
-    placeholderColor: theme.gray,
-    cursorColor: theme.green,
-    flexGrow: 1,
-    keyBindings: [
-      { name: "return", action: "submit" },
-      { name: "kpenter", action: "submit" },
-      { name: "linefeed", action: "submit" },
-      { name: "return", shift: true, action: "newline" },
-    ],
+  const composer = new Composer(renderer, {
+    provider: () => opts.settings.config.provider,
+    onSubmit: (value) => { void submit(value) },
+    canSubmit: (text) => text.trim().startsWith("/") || !opts.runtime.isRunning || opts.runtime.snapshot().mode === "waiting_for_user",
+    onHeightChange: () => updateFooter(opts.runtime.snapshot()),
   })
-  promptRow.add(input)
-  input.onSubmit = () => {
-    const value = input.plainText
-    input.setText("")
-    void submit(value)
-  }
+  const input = composer.input
   footer.add(historyLine)
   footer.add(dashboard)
   footer.add(live)
-  footer.add(promptRow)
+  footer.add(composer.box)
   footer.add(status)
   renderer.root.add(footer)
   input.focus()
@@ -114,6 +83,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const rendererWidth = () => Math.max(20, renderer.width - 1)
 
   const writeBlock = (content: StyledText, shaded: boolean, trailingBlank = true): void => {
+    if (renderer.isDestroyed) return
     // writeToScrollback uses the root's height before layout, so compute it from
     // the content itself (one row per line, plus an optional blank separator).
     const lineCount = content.chunks.reduce((n, chunk) => n + (chunk.text.split("\n").length - 1), 0) + 1
@@ -171,7 +141,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
       case "note":
-        return concat([fg(theme.yellow)("⏹ "), dim(entry.text)])
+        return concat([dim(block(entry.text, width, 0))])
       case "subagent": {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"
@@ -216,41 +186,37 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const updateFooter = (state: AgentState): void => {
-    const m = state.metrics
-    const meta = `${opts.runtime.llmLabel}${opts.settings.config.thinking ? " · thinking" : ""} · llm ${m.llmCalls} · tools ${m.toolCalls}`
-    status.content = concat([
-      renderChip(statusChip(state)),
-      plain("  "),
-      dim(meta),
-      plain("   "),
-      dim("ctrl+c quit · Esc interrupts · /help"),
-    ])
+    if (renderer.isDestroyed) return
+    status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking)
 
+    const available = Math.max(0, renderer.terminalHeight - composer.height - 6)
     const pane = buildDashboard(
       state,
       rendererWidth(),
       opts.settings.config.replDashboard,
       opts.settings.config.fileBudgetTokens,
+      Math.min(available, Math.floor(renderer.terminalHeight / 3)),
     )
     dashboard.content = pane
     const rows = countLines(pane)
     dashboard.height = rows
 
-    const stripe = historyStripe(state, rendererWidth())
+    const stripe = renderer.terminalHeight >= 24 && composer.height <= 3 ? historyStripe(state, rendererWidth()) : []
     historyLine.content = concat(stripe)
     const stripeRows = stripe.length > 0 ? 2 : 0
     historyLine.height = stripeRows
 
     // Only touch the split-footer size when it actually changes — resizing it on
     // every tick disturbs the scroll region.
-    const total = stripeRows + rows + 5
+    live.content = liveContent(state)
+    const liveRows = live.content.chunks.some((chunk) => chunk.text.length > 0) ? 1 : 0
+    live.height = liveRows
+    const total = stripeRows + rows + liveRows + composer.height + 1
     if (total !== footerRows) {
       footerRows = total
       footer.height = total
       renderer.footerHeight = total
     }
-
-    live.content = liveContent(state)
   }
 
   const liveContent = (state: AgentState): StyledText => {
@@ -275,10 +241,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const streamingLine = (streaming: StreamingState, width: number): StyledText => {
+    if (streaming.text) return plain(tail(streaming.text, width - 2))
     if (streaming.reasoning && opts.settings.config.showThinking) {
       return concat([fg(theme.magenta)("✻ "), italic(dim(tail(streaming.reasoning, width - 4)))])
     }
-    if (streaming.text) return plain(tail(streaming.text, width - 2))
     if (streaming.tool) return concat([fg(theme.blue)("→ "), bold(fg(theme.blue)(streaming.tool)), dim(" running…")])
     return concat([dim("…")])
   }
@@ -290,7 +256,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const commandContext: CommandContext = {
     runtime: opts.runtime,
     settings: opts.settings,
-    print: (text) => print([plain(text)]),
+    print: (text) => print([plain(block(text, rendererWidth(), 0))]),
     switchUi: (mode) => {
       result = "switch"
       opts.settings.config.ui = mode
@@ -313,9 +279,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     if (!trimmed && !choicesPending) return
 
     if (trimmed.startsWith("/")) {
-      history.push(trimmed)
-      historyIndex = history.length
       runCommand(trimmed, commandContext)
+      updateFooter(opts.runtime.snapshot())
       return
     }
 
@@ -334,8 +299,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       return
     }
 
-    history.push(text)
-    historyIndex = history.length
     try {
       await opts.runtime.request(text)
     } catch (error) {
@@ -343,29 +306,25 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     }
   }
 
-  const history: string[] = []
-  let historyIndex = 0
-
   renderer.keyInput.on("keypress", (key) => {
-    if (key.name === "tab") {
+    if (key.ctrl && key.name === "p") {
       key.preventDefault()
       key.stopPropagation()
-      const completed = completeInput(
-        input.plainText,
-        input.cursorOffset,
-        cachedModels(opts.settings.config.provider),
-      )
-      if (completed) {
-        input.setText(completed.text)
-        input.cursorOffset = completed.cursor
-      }
+      composer.openCommands()
       return
     }
+    // Esc always stops active work; otherwise it dismisses completion, preserving the draft.
+    if (key.name === "escape" && opts.runtime.isRunning) {
+      key.preventDefault()
+      key.stopPropagation()
+      opts.runtime.interrupt()
+      return
+    }
+    if (input.plainText.length > 0 && composer.handleKey(key)) return
     if (key.name === "escape") {
       key.preventDefault()
       key.stopPropagation()
-      if (opts.runtime.isRunning) opts.runtime.interrupt()
-      else if (input.plainText.length > 0) input.setText("")
+      // An idle Escape never destroys an unfinished message.
       return
     }
 
@@ -398,19 +357,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       }
     }
 
-    if (key.name === "up" && inputEmpty && history.length > 0) {
-      historyIndex = Math.max(0, historyIndex - 1)
-      input.setText(history[historyIndex] ?? "")
-      key.preventDefault()
-      key.stopPropagation()
-      return
-    }
-    if (key.name === "down" && inputEmpty) {
-      historyIndex = Math.min(history.length, historyIndex + 1)
-      input.setText(history[historyIndex] ?? "")
-      key.preventDefault()
-      key.stopPropagation()
-    }
+    if (inputEmpty) composer.handleKey(key)
   })
 
   // ---- wiring -------------------------------------------------------------
@@ -429,7 +376,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     updateFooter(state)
   }
 
-  opts.runtime.bus.on((event) => {
+  const unsubscribe = opts.runtime.bus.on((event) => {
     if (event.type === "state.changed" || event.type === "conversation.added") onState()
   })
 
@@ -445,7 +392,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }, 250)
 
   updateFooter(opts.runtime.snapshot())
-  renderer.on("resize", () => updateFooter(opts.runtime.snapshot()))
+  renderer.on("resize", () => { composer.refresh(); updateFooter(opts.runtime.snapshot()) })
   onState()
 
   if (opts.notice) print([dim(opts.notice)])
@@ -459,7 +406,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   if (opts.initialTask) void submit(opts.initialTask)
 
-  return done
+  await done
+  unsubscribe()
+  composer.dispose()
+  return result
 }
 
 function tail(text: string, length: number): string {
@@ -472,56 +422,33 @@ export function replSupported(): boolean {
   return Boolean(process.stdout.isTTY)
 }
 
-/** The footer dashboard: task stack fields, then the file working set. */
-function buildDashboard(state: AgentState, width: number, showFiles: boolean, budgetTokens: number): StyledText {
-  const labelWidth = 7
-  const valueWidth = Math.max(8, width - labelWidth)
-  const out: Part[] = []
-  let first = true
-
-  const line = (parts: Part[]) => {
-    if (!first) out.push(plain("\n"))
-    first = false
-    out.push(...parts)
-  }
-  const field = (label: string, value: string) => {
-    const wrapped = wrapRaw(value.length > 0 ? value : "—", valueWidth)
-    wrapped.forEach((text, index) => {
-      line([index === 0 ? dim(label.padEnd(labelWidth)) : plain(" ".repeat(labelWidth)), plain(text)])
-    })
-  }
-
-  const top = state.stack[state.stack.length - 1]
+/** Bounded working summary; /task owns the full plan, /status the counters. */
+export function buildDashboard(state: AgentState, width: number, visible: boolean, budgetTokens: number, maxRows = 8): StyledText {
+  if (!visible || maxRows < 1) return plain("")
+  const rows: Part[][] = []
+  const field = (label: string, value: string) => rows.push([
+    dim(label.padEnd(7)), plain(clipText(value.replace(/\s+/g, " "), Math.max(1, width - 7))),
+  ])
+  const top = state.stack.at(-1)
   if (top) {
     field("TASK", top.title)
-    field("WHY", top.why)
-    field("SCOPE", top.scope)
-    field("DONE", top.definitionOfDone)
-    for (const [index, todo] of top.todos.entries()) {
-      const glyph = todo.status === "done" ? "✓" : todo.status === "abandoned" ? "✗" : "·"
-      field(index === 0 ? "TODO" : "", `${glyph} ${todo.text}${todo.note ? ` — ${todo.note}` : ""}`)
-    }
-    const parents = state.stack.slice(0, -1)
-    if (parents.length > 0) field("STACK", parents.map((frame) => frame.title).join(" › "))
-  } else {
-    field("TASK", "no active frame")
+    const pending = top.todos.filter((todo) => todo.status === "pending")
+    for (const todo of pending) field("·", todo.text)
+    if (pending.length === 0) field("✓", "Checklist resolved")
+    if (state.stack.length > 1) field("STACK", state.stack.slice(0, -1).map((frame) => frame.title).join(" › "))
   }
-
-  if (showFiles) {
-    line([dim("─".repeat(width))])
+  if (state.files.length > 0) {
     const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
-    const list =
-      state.files.length > 0
-        ? state.files.map((file) => `${file.path} ${formatTokens(file.tokenCount)}`).join("   ")
-        : `no files in context   ·   ${formatTokens(used)} / ${formatTokens(budgetTokens)} tokens`
-    field("FILES", list)
+    field("FILES", `${state.files.length} · ${formatTokens(used)} / ${formatTokens(budgetTokens)} tokens · ${state.files.map((file) => file.path).join(" · ")}`)
   }
-
-  return concat(out)
+  const hidden = rows.length > maxRows
+  const shown = rows.slice(0, hidden ? Math.max(0, maxRows - 1) : maxRows)
+  if (hidden) shown.push([dim(clipText(`… ${rows.length - shown.length} more · /task for the full plan`, width))])
+  return concat(shown.flatMap((row, index) => index ? [plain("\n"), ...row] : row))
 }
 
 function countLines(styled: StyledText): number {
-  if (styled.chunks.length === 0) return 0
+  if (!styled.chunks.some((chunk) => chunk.text.length > 0)) return 0
   let lines = 1
   for (const chunk of styled.chunks) lines += chunk.text.split("\n").length - 1
   return lines

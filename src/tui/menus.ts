@@ -1,9 +1,9 @@
 import type { MenuItem } from "./menu.ts"
-import type { SettingsController, UiMode } from "./settings.ts"
+import { changeModel, type SettingsController, type UiMode } from "./settings.ts"
 import type { StackyConfig } from "../config.ts"
 import { PROVIDERS } from "../llm/catalog.ts"
-import { cachedModels } from "../llm/models.ts"
-import { hasApiKey, type ProviderName } from "../llm/providers.ts"
+import { listModels } from "../llm/models.ts"
+import { hasApiKey } from "../llm/providers.ts"
 
 export type MenuContext = SettingsController & {
   close: () => void
@@ -19,10 +19,6 @@ const CONVERSATION_BUDGETS = ["16000", "32000", "64000", "128000"]
 export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
   const cfg = ctx.config
 
-  const commitModel = () => {
-    ctx.persist()
-    ctx.rebuildModel()
-  }
   const commitContext = () => {
     ctx.persist()
     ctx.runtime.setBudgets({
@@ -36,7 +32,7 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
       kind: "submenu",
       label: "Model",
       hint: `${cfg.provider}/${cfg.model}${ctx.isMock ? " (mock)" : ""}`,
-      items: () => modelItems(ctx, commitModel),
+      items: () => modelItems(ctx),
     },
     {
       kind: "toggle",
@@ -44,8 +40,7 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
       hint: "model reasoning",
       value: () => cfg.thinking,
       set: (v) => {
-        cfg.thinking = v
-        commitModel()
+        changeModel(ctx, { thinking: v })
       },
     },
     {
@@ -111,26 +106,25 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
   ]
 }
 
-function modelItems(ctx: MenuContext, commitModel: () => void): MenuItem[] {
-  const items: MenuItem[] = []
-  for (const provider of PROVIDERS) {
-    const available = hasApiKey(provider)
-    items.push({
-      kind: "separator",
-      label: `${provider}${available ? "" : " — no API key"}`,
-    })
-    for (const model of cachedModels(provider)) {
-      items.push({
-        kind: "action",
-        label: model,
-        checked: ctx.config.provider === provider && ctx.config.model === model,
-        run: () => {
-          ctx.config.provider = provider as ProviderName
-          ctx.config.model = model
-          commitModel()
-        },
-      })
-    }
-  }
-  return items
+function modelItems(ctx: MenuContext): MenuItem[] {
+  return PROVIDERS.map((provider) => ({
+    kind: "submenu",
+    label: provider,
+    hint: hasApiKey(provider)
+      ? (ctx.config.provider === provider ? ctx.config.model : "browse models")
+      : provider === "chatgpt" ? "/login chatgpt first" : "API key required",
+    items: async () => {
+      // Opening a provider is an explicit request for its current list, not a stale catalog view.
+      const { ids, source } = await listModels(provider, { force: true })
+      return [
+        { kind: "separator", label: source === "api" ? "From provider" : source === "cache" ? "Cached · provider unavailable" : "Unverified fallback · provider unavailable" },
+        ...ids.map((model): MenuItem => ({
+          kind: "action",
+          label: model,
+          checked: ctx.config.provider === provider && ctx.config.model === model,
+          run: () => changeModel(ctx, { provider, model }),
+        })),
+      ]
+    },
+  }))
 }

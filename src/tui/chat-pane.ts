@@ -3,7 +3,7 @@ import {
   BoxRenderable,
   dim,
   fg,
-  InputRenderable,
+  TextareaRenderable,
   italic,
   reverse,
   ScrollBoxRenderable,
@@ -12,14 +12,19 @@ import {
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
+import { formatUserMessage } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarOptions } from "./theme.ts"
-import { block, clampLines, concat, fit, header, paneInner, paneRule, plain, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, clampLines, concat, fit, paneInner, paneRule, plain, prefixLines, quoteBlock, wrapRaw, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
+import { Composer } from "./composer.ts"
+import type { ProviderName } from "../llm/providers.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
+  canSubmit?: (text: string) => boolean
+  provider: () => ProviderName
 }
 
 /**
@@ -29,9 +34,11 @@ export type ChatPaneOptions = {
  */
 export class ChatPane {
   readonly box: BoxRenderable
-  readonly input: InputRenderable
+  readonly input: TextareaRenderable
+  readonly composer: Composer
   private scroll: ScrollBoxRenderable
   private blocks = 0
+  private lastTranscript = ""
 
   constructor(
     private renderer: CliRenderer,
@@ -58,44 +65,42 @@ export class ChatPane {
       scrollbarOptions: scrollbarOptions(),
     })
 
-    this.input = new InputRenderable(renderer, {
-      placeholder: "Message the agent…",
-      backgroundColor: theme.bg,
-      focusedBackgroundColor: theme.bg,
-      textColor: theme.fg,
-      focusedTextColor: theme.fg,
-      placeholderColor: theme.gray,
-      cursorColor: theme.blue,
-    })
-    // InputRenderable.submit() overrides Textarea.submit() and does NOT call
-    // onSubmit — it emits an "enter" event with the submitted value instead.
-    this.input.on("enter", (value: string) => {
-      this.input.value = ""
-      opts.onSubmit(value)
-    })
-
+    this.composer = new Composer(renderer, opts)
+    this.input = this.composer.input
     this.box.add(this.scroll)
-    this.box.add(this.input)
+    this.box.add(this.composer.box)
   }
 
   focus(): void {
     this.input.focus()
   }
 
+  scrollPage(direction: -1 | 1): void {
+    this.scroll.scrollBy(direction * Math.max(1, this.scroll.height - 2))
+  }
+
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
     const width = paneInner(this.box, this.renderer, 0.5)
+    const signature = JSON.stringify([width, state.conversation, state.streaming, state.toolOutput, state.userRequest, state.mode, selectedChoice, showThinking])
+    if (signature === this.lastTranscript) return
+    this.lastTranscript = signature
     this.clear()
 
-    this.addBlock(concat([header("CHAT", `${state.conversation.length} entries`, width), plain("\n"), paneRule(width)]), false)
-
     if (state.conversation.length === 0) {
-      this.addBlock(concat([dim("No conversation yet. Describe a task below to begin.")]), false)
+      this.addBlock(concat([bold("stacky"), plain("\n\nDescribe what you want to build or fix."), plain("\n\n"), dim("/model to switch · /help for commands")]), false)
     }
 
+    const pending = state.mode === "waiting_for_user" ? state.userRequest : undefined
+    const activeQuestion = pending?.choices?.length
+      ? state.conversation.findLast((entry) => entry.role === "agent" && entry.text === formatUserMessage(pending))?.id
+      : undefined
     for (const entry of state.conversation) {
       if (entry.role === "thinking" && !showThinking) continue
       const shaded = entry.role === "user" || entry.role === "observation"
-      this.addBlock(this.renderEntry(entry, width), shaded)
+      // The active selector owns the options. Once answered, the original full
+      // question remains in history; no runtime/prompt data is discarded.
+      const display = entry.id === activeQuestion && pending ? { ...entry, text: pending.message } : entry
+      this.addBlock(this.renderEntry(display, width), shaded)
     }
 
     const streaming = state.streaming
@@ -104,15 +109,17 @@ export class ChatPane {
       this.addBlock(concat([dim(`  │ ${state.toolOutput}`)]), false)
     }
 
-    const pending = state.userRequest
-    if (pending && state.mode === "waiting_for_user") {
+    if (pending?.choices?.length) {
       this.addBlock(this.renderChoices(pending, selectedChoice, width), false)
     }
   }
 
   /** Replace all transcript blocks. */
   private clear(): void {
-    for (const child of [...this.scroll.getChildren()]) this.scroll.remove(child)
+    for (const child of [...this.scroll.getChildren()]) {
+      this.scroll.remove(child)
+      child.destroyRecursively()
+    }
     this.blocks = 0
   }
 
@@ -151,7 +158,7 @@ export class ChatPane {
   private renderEntry(entry: ConversationEntry, width: number): StyledText {
     switch (entry.role) {
       case "user":
-        return concat([this.bar(fg(theme.green), "You"), plain("\n"), renderMarkdown(entry.text, width, 2)])
+        return prefixLines(renderMarkdown(entry.text, width - 2, 0), "▌ ", theme.green)
       case "agent":
         // The agent is the default voice: no marker. The user's green bar (and the
         // shaded tint on user input) is what distinguishes the two.
@@ -167,7 +174,7 @@ export class ChatPane {
       case "observation":
         return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
       case "note":
-        return concat([fg(theme.yellow)("⏹ "), dim(block(entry.text, width - 2, 0))])
+        return concat([dim(block(entry.text, width, 0))])
       case "subagent": {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"

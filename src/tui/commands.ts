@@ -1,9 +1,9 @@
 import type { AgentRuntime } from "../agent/runtime.ts"
 import { PROVIDERS } from "../llm/catalog.ts"
 import { hasApiKey, type ProviderName } from "../llm/providers.ts"
-import { listModels } from "../llm/models.ts"
+import { cachedModels, listModels } from "../llm/models.ts"
 import { clearAuth, loginWithBrowser } from "../llm/oauth.ts"
-import type { SettingsController, UiMode } from "./settings.ts"
+import { changeModel, type SettingsController, type UiMode } from "./settings.ts"
 
 /** Everything a command needs, provided by whichever interface is running. */
 export type CommandContext = {
@@ -39,37 +39,39 @@ const COMMANDS: Command[] = [
       const trimmed = arg.trim()
       if (!trimmed || trimmed === "refresh") {
         const force = trimmed === "refresh"
-        const lines = [`Current: ${ctx.runtime.llmLabel}${force ? "  · refreshing…" : ""}`, ""]
-        for (const provider of PROVIDERS) {
-          const { ids, source } = await listModels(provider, { force })
+        ctx.print(force ? "Refreshing model lists…" : "Loading model lists…")
+        const results = await Promise.all(PROVIDERS.map(async (provider) => ({ provider, list: await listModels(provider, { force }) })))
+        const lines = [`Current: ${ctx.runtime.llmLabel}`, ""]
+        for (const { provider, list: { ids, source } } of results) {
           const note = !hasApiKey(provider)
-            ? "  (not signed in)"
+            ? (provider === "chatgpt" ? "  (sign in: /login chatgpt)" : "  (API key missing)")
             : source === "cache"
               ? "  (cached)"
               : source === "catalog"
-                ? "  (built-in list)"
-                : ""
+                ? "  (unverified fallback — provider unavailable)"
+                : "  (provider list)"
           lines.push(`${provider}${note}:`)
-          for (const model of ids.slice(0, 50)) {
+          for (const model of ids) {
             const current = ctx.settings.config.provider === provider && ctx.settings.config.model === model
             lines.push(`  ${current ? "❯" : " "} ${model}`)
           }
-          if (ids.length > 50) lines.push(`    … ${ids.length - 50} more`)
         }
-        lines.push("", "Switch with /model <provider>/<model> · refresh with /model refresh")
+        lines.push("", "Type /model followed by a name to filter completions · Tab to choose · /model refresh to update")
         ctx.print(lines.join("\n"))
         return
       }
-      const [providerPart, modelPart] = arg.includes("/") ? arg.split("/", 2) : [undefined, arg]
+      const slash = trimmed.indexOf("/")
+      const [providerPart, modelPart] = slash >= 0 ? [trimmed.slice(0, slash), trimmed.slice(slash + 1)] : [undefined, trimmed]
       const provider = (providerPart as ProviderName | undefined) ?? ctx.settings.config.provider
       if (!PROVIDERS.includes(provider) || !modelPart) {
         ctx.print('Usage: /model <provider>/<model>  e.g. deepseek/deepseek-flash')
         return
       }
-      ctx.settings.config.provider = provider
-      ctx.settings.config.model = modelPart
-      ctx.settings.rebuildModel()
-      ctx.settings.persist()
+      if (slash < 0 && !cachedModels(provider).includes(modelPart)) {
+        ctx.print(`No exact model "${modelPart}" in the ${provider} list. Type /model ${modelPart} and press Tab to choose. For an unlisted id, use /model ${provider}/<exact-id>.`)
+        return
+      }
+      changeModel(ctx.settings, { provider, model: modelPart })
       ctx.print(`Model: ${provider}/${modelPart}`)
     },
   },
@@ -80,9 +82,8 @@ const COMMANDS: Command[] = [
     description: "toggle the model's reasoning mode",
     run: (arg, ctx) => {
       const value = arg ? arg === "on" : !ctx.settings.config.thinking
-      ctx.settings.config.thinking = value
-      ctx.settings.rebuildModel()
-      ctx.settings.persist()
+      if (arg && !["on", "off"].includes(arg)) { ctx.print("Usage: /thinking on|off"); return }
+      changeModel(ctx.settings, { thinking: value })
       ctx.print(`Thinking ${value ? "on" : "off"}.`)
     },
   },
@@ -92,6 +93,7 @@ const COMMANDS: Command[] = [
     usage: "/thinking-blocks [on|off]",
     description: "toggle the thinking display",
     run: (arg, ctx) => {
+      if (arg && !["on", "off"].includes(arg)) { ctx.print("Usage: /thinking-blocks on|off"); return }
       const value = arg ? arg === "on" : !ctx.settings.config.showThinking
       ctx.settings.config.showThinking = value
       ctx.settings.persist()
@@ -119,10 +121,36 @@ const COMMANDS: Command[] = [
     usage: "/dashboard [on|off]",
     description: "toggle the task/files dashboard (REPL)",
     run: (arg, ctx) => {
+      if (arg && !["on", "off"].includes(arg)) { ctx.print("Usage: /dashboard on|off"); return }
       const value = arg ? arg === "on" : !ctx.settings.config.replDashboard
       ctx.settings.config.replDashboard = value
       ctx.settings.persist()
       ctx.print(`Dashboard ${value ? "on" : "off"}.`)
+    },
+  },
+  {
+    name: "task",
+    usage: "/task",
+    description: "show the full task stack and checklist",
+    run: (_arg, ctx) => {
+      const stack = ctx.runtime.snapshot().stack
+      ctx.print(stack.length === 0 ? "No active task." : stack.map((frame, i) => [
+        `${i + 1}. ${frame.title}`,
+        `Why: ${frame.why}`,
+        `Scope: ${frame.scope}`,
+        `Known: ${frame.knownContext || "—"}`,
+        `Done when: ${frame.definitionOfDone}`,
+        ...frame.todos.map((todo) => `${todo.status === "done" ? "✓" : todo.status === "abandoned" ? "✗" : "·"} ${todo.text}${todo.note ? ` — ${todo.note}` : ""}`),
+      ].join("\n")).join("\n\n"))
+    },
+  },
+  {
+    name: "files",
+    usage: "/files",
+    description: "show every file in the working context",
+    run: (_arg, ctx) => {
+      const files = ctx.runtime.snapshot().files
+      ctx.print(files.length ? files.map((file) => `${file.path}  ·  ${file.tokenCount} tokens`).join("\n") : "No files read yet.")
     },
   },
   {
@@ -217,7 +245,15 @@ const COMMANDS: Command[] = [
 
 export function helpText(): string {
   const width = Math.max(...COMMANDS.map((command) => command.usage.length))
-  return ["Commands:", ...COMMANDS.map((command) => `  ${command.usage.padEnd(width)}  ${command.description}`)].join("\n")
+  return [
+    "Commands:",
+    ...COMMANDS.map((command) => `  ${command.usage.padEnd(width)}  ${command.description}`),
+    "",
+    "Tab / Shift+Tab  choose completions · Enter accepts a selection, otherwise sends",
+    "Shift+Enter / Alt+Enter  newline · Alt+Up/Down  history (keeps your draft)",
+    "Esc  interrupt work or dismiss completion · Ctrl+C  quit",
+    "Ctrl+P  commands (REPL) / settings (panes) · PageUp/Down  scroll chat (panes)",
+  ].join("\n")
 }
 
 export function findCommand(name: string): Command | undefined {
@@ -238,7 +274,13 @@ export function runCommand(input: string, ctx: CommandContext): boolean {
     ctx.print(`Unknown command /${name}. Try /help.`)
     return true
   }
-  void command.run(rest.join(" ").trim(), ctx)
+  try {
+    Promise.resolve(command.run(rest.join(" ").trim(), ctx)).catch((error: unknown) => {
+      ctx.print(`Could not /${command.name}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  } catch (error) {
+    ctx.print(`Could not /${command.name}: ${error instanceof Error ? error.message : String(error)}`)
+  }
   return true
 }
 

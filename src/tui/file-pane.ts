@@ -46,11 +46,11 @@ export class FilePane {
     const width = paneInner(this.box, this.renderer, 0.26)
     const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
     const ratio = budgetTokens > 0 ? used / budgetTokens : 0
-    const pressure = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.green
+    const pressure = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.dim
     const percent = `${Math.round(ratio * 100)}%`
 
     const parts: Part[] = [
-      header("FILE WORKING SET", `${state.files.length} file${state.files.length === 1 ? "" : "s"}`, width),
+      header("FILES", `${state.files.length}`, width),
       plain("\n"),
       paneRule(width),
       plain("\n\n"),
@@ -63,8 +63,6 @@ export class FilePane {
     if (state.files.length === 0) {
       parts.push(dim("Nothing read yet."))
     } else {
-      parts.push(header("HOT", "", width))
-      parts.push(plain("\n"))
       const nameWidth = Math.max(6, width - 7)
       for (const file of state.files) {
         const name = file.path.length > nameWidth ? `…${file.path.slice(-(nameWidth - 1))}` : file.path.padEnd(nameWidth)
@@ -75,6 +73,5 @@ export class FilePane {
     }
 
     this.text.content = concat(parts)
-    this.scroll.scrollTop = 0
   }
 }
