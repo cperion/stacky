@@ -101,7 +101,7 @@ export function accountIdFromIdToken(idToken?: string): string | undefined {
 
 export function tokensFromResponse(body: Record<string, unknown>, previous?: ChatGptAuth): ChatGptAuth {
   const expiresIn = typeof body.expires_in === "number" ? body.expires_in : 3600
-  const accessToken = typeof body.access_token === "string" ? body.access_token : previous?.access_token
+  const accessToken = typeof body.access_token === "string" ? body.access_token : undefined
   const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token : previous?.refresh_token
   if (!accessToken) throw new Error("token response had no access_token")
   const accountId = accountIdFromIdToken(typeof body.id_token === "string" ? body.id_token : undefined)
@@ -111,6 +111,23 @@ export function tokensFromResponse(body: Record<string, unknown>, previous?: Cha
     expires_at: Date.now() + expiresIn * 1000,
     ...(accountId ?? previous?.account_id ? { account_id: accountId ?? previous?.account_id } : {}),
   }
+}
+
+/** Contains only sanitized status/host diagnostics, never token response bodies. */
+export class OAuthResponseError extends Error {}
+
+async function tokenResponse(response: Response): Promise<Record<string, unknown>> {
+  if (response.status >= 300 && response.status < 400) {
+    let host = "another host"
+    try { host = new URL(response.headers.get("location") ?? "", TOKEN_URL).hostname } catch { /* redact Location */ }
+    throw new OAuthResponseError(`OAuth HTTP ${response.status}: auth.openai.com redirected to ${host}. Check network API access.`)
+  }
+  if (!response.ok) throw new OAuthResponseError(`OAuth token endpoint returned HTTP ${response.status}; check authentication and network access.`)
+  try {
+    const body: unknown = await response.json()
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid envelope")
+    return body as Record<string, unknown>
+  } catch { throw new OAuthResponseError("OAuth token endpoint returned invalid JSON; check network access.") }
 }
 
 export async function exchangeCode(code: string, verifier: string): Promise<ChatGptAuth> {
@@ -124,12 +141,15 @@ export async function exchangeCode(code: string, verifier: string): Promise<Chat
       redirect_uri: REDIRECT_URI,
       code_verifier: verifier,
     }),
+    redirect: "manual",
+    signal: AbortSignal.timeout(10_000),
   })
-  if (!response.ok) throw new Error(`token exchange failed: ${response.status} ${await response.text()}`)
-  return tokensFromResponse((await response.json()) as Record<string, unknown>)
+  return tokensFromResponse(await tokenResponse(response))
 }
 
-export async function refreshAuth(auth: ChatGptAuth): Promise<ChatGptAuth> {
+const refreshing = new Map<string, Promise<ChatGptAuth>>()
+
+export async function refreshAuth(auth: ChatGptAuth, signal = AbortSignal.timeout(10_000)): Promise<ChatGptAuth> {
   if (!auth.refresh_token) throw new Error("no refresh token; run /login chatgpt again")
   const response = await fetch(TOKEN_URL, {
     method: "POST",
@@ -140,20 +160,30 @@ export async function refreshAuth(auth: ChatGptAuth): Promise<ChatGptAuth> {
       refresh_token: auth.refresh_token,
       scope: "openid profile email",
     }),
+    redirect: "manual",
+    signal,
   })
-  if (!response.ok) throw new Error(`token refresh failed: ${response.status}`)
-  const next = tokensFromResponse((await response.json()) as Record<string, unknown>, auth)
+  const next = tokensFromResponse(await tokenResponse(response), auth)
+  const current = loadAuth()
+  if (!current || current.refresh_token !== auth.refresh_token || current.access_token !== auth.access_token) {
+    throw new Error("ChatGPT login changed during refresh; retry after signing in.")
+  }
   saveAuth(next)
   return next
 }
 
 /** Access token guaranteed valid for at least `skewMs` from now. */
-export async function ensureFreshAuth(skewMs = 60_000): Promise<ChatGptAuth> {
+export async function ensureFreshAuth(skewMs = 60_000, signal?: AbortSignal): Promise<ChatGptAuth> {
   const auth = loadAuth()
   if (!auth) throw new Error("Not signed in to ChatGPT. Run /login chatgpt.")
   if (auth.expires_at - Date.now() > skewMs) return auth
-  if (!auth.refresh_token) return auth
-  return refreshAuth(auth)
+  if (!auth.refresh_token) throw new Error("ChatGPT token expired; run /login chatgpt again.")
+  const key = createHash("sha256").update(`${authPath()}\0${auth.refresh_token}`).digest("hex")
+  const pending = refreshing.get(key)
+  if (pending) return pending
+  const job = refreshAuth(auth, signal)
+  refreshing.set(key, job)
+  try { return await job } finally { refreshing.delete(key) }
 }
 
 export function openBrowser(url: string): void {

@@ -32,6 +32,8 @@ describe("completeInput", () => {
     expect(completeInput("/theme d", 8, MODELS)?.text).toBe("/theme dark ")
     expect(completeInput("/think of", 9, MODELS)?.text).toBe("/think off ")
     expect(completeInput("/login ch", 9, MODELS)?.text).toBe("/login chatgpt ")
+    const refresh = "/model refresh ch"
+    expect(completeInput(refresh, refresh.length, MODELS)?.text).toBe("/model refresh chatgpt ")
   })
 
   test("model substring matches keep the provider-qualified id", () => {

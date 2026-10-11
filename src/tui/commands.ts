@@ -1,7 +1,8 @@
 import type { AgentRuntime } from "../agent/runtime.ts"
 import { PROVIDERS } from "../llm/catalog.ts"
-import { hasApiKey, type ProviderName } from "../llm/providers.ts"
-import { cachedModels, listModels } from "../llm/models.ts"
+import type { ProviderName } from "../llm/providers.ts"
+import { cachedModels, clearModelCache, listModels } from "../llm/models.ts"
+import { formatModelList } from "./model-list.ts"
 import { clearAuth, loginWithBrowser } from "../llm/oauth.ts"
 import { changeModel, type SettingsController, type UiMode } from "./settings.ts"
 
@@ -33,31 +34,27 @@ const COMMANDS: Command[] = [
   {
     name: "model",
     aliases: ["models"],
-    usage: "/model [provider/id|refresh]",
+    usage: "/model [provider|provider/id|refresh [provider]]",
     description: "show or choose a model",
     run: async (arg, ctx) => {
       const trimmed = arg.trim()
-      if (!trimmed || trimmed === "refresh") {
-        const force = trimmed === "refresh"
-        ctx.print(force ? "Refreshing model lists…" : "Loading model lists…")
-        const results = await Promise.all(PROVIDERS.map(async (provider) => ({ provider, list: await listModels(provider, { force }) })))
-        const lines = [`Current: ${ctx.runtime.llmLabel}`, ""]
-        for (const { provider, list: { ids, source } } of results) {
-          const note = !hasApiKey(provider)
-            ? (provider === "chatgpt" ? "  (sign in: /login chatgpt)" : "  (API key missing)")
-            : source === "cache"
-              ? "  (cached)"
-              : source === "catalog"
-                ? "  (unverified fallback — provider unavailable)"
-                : "  (provider list)"
-          lines.push(`${provider}${note}:`)
-          for (const model of ids) {
-            const current = ctx.settings.config.provider === provider && ctx.settings.config.model === model
-            lines.push(`  ${current ? "❯" : " "} ${model}`)
-          }
+      const refresh = /^refresh(?:\s+(\S+))?$/.exec(trimmed)
+      const browse = PROVIDERS.find((provider) => provider === trimmed)
+      if (!trimmed || refresh || browse) {
+        const target = refresh?.[1] ?? browse
+        if (target && !PROVIDERS.includes(target as ProviderName)) {
+          ctx.print(`Unknown provider. Choose ${PROVIDERS.join(" | ")}.`)
+          return
         }
-        lines.push("", "Type /model followed by a name to filter completions · Tab to choose · /model refresh to update")
-        ctx.print(lines.join("\n"))
+        const providers = target ? [target as ProviderName] : PROVIDERS
+        ctx.print(`Fetching model lists from ${providers.join(", ")}…`)
+        // Opening the list is an explicit request for a fresh provider response.
+        // Results arrive independently so one slow provider cannot hide the others.
+        await Promise.all(providers.map(async (provider) => {
+          const list = await listModels(provider, { force: true })
+          ctx.print(formatModelList(provider, list, `${ctx.settings.config.provider}/${ctx.settings.config.model}`))
+        }))
+        ctx.print("Select: /model provider/id · filter with /model <name> then Tab · retry: /model refresh [provider]")
         return
       }
       const slash = trimmed.indexOf("/")
@@ -214,8 +211,10 @@ const COMMANDS: Command[] = [
       ctx.print("Opening your browser to sign in to ChatGPT…")
       try {
         const auth = await loginWithBrowser((url) => ctx.print(`If it doesn't open automatically: ${url}`))
+        clearModelCache("chatgpt")
         const account = auth.account_id ? ` (account ${auth.account_id.slice(0, 8)}…)` : ""
-        ctx.print(`Signed in to ChatGPT${account}. Switch with /model chatgpt/gpt-5-codex`)
+        ctx.print(`Signed in to ChatGPT${account}. Fetching your available models…`)
+        ctx.print(formatModelList("chatgpt", await listModels("chatgpt", { force: true })))
       } catch (error) {
         ctx.print(`Login failed: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -231,6 +230,7 @@ const COMMANDS: Command[] = [
         return
       }
       clearAuth()
+      clearModelCache("chatgpt")
       ctx.print("Signed out of ChatGPT.")
     },
   },

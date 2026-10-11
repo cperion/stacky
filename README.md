@@ -145,7 +145,7 @@ Both interfaces use the same composer. Typing `/` shows command descriptions;
 command arguments complete too. Type `/model sonnet` to filter across providers,
 then Tab to choose and Enter to accept. A second Enter runs the command (a unique
 Tab match fills immediately, so only one Enter is needed). Model
-lists refresh in the background, with cached/unverified/authentication labels.
+lists refresh in the background, with API/cache provenance and visible discovery errors.
 Busy submission keeps your draft rather than discarding it. In the REPL,
 `Ctrl+P` opens a command palette and restores your draft on Escape or after a
 command runs. Slash commands include:
@@ -244,7 +244,8 @@ Settings
 
 The **Model** submenu groups models by provider. Opening a provider fetches its
 list with a visible loading state; errors remain in the menu rather than closing
-it. Cached or unverified fallback lists are labelled. Selecting a model rebuilds
+it. Saved API responses carry timestamps; failed discovery never substitutes a
+hardcoded model catalog. Selecting a model rebuilds
 the client and persists the choice. Switching during a turn is refused without
 mutating settings; missing credentials and failed switches have actionable errors. `Thinking` maps to the provider-agnostic
 `reasoning` setting (`'none'` vs `'provider-default'`); DeepSeek V4 models think by
@@ -261,7 +262,7 @@ Run against a ChatGPT plan instead of an OpenAI API key:
 ```bash
 stacky
 /login chatgpt                 # opens the browser, then stores tokens
-/model chatgpt/gpt-5-codex
+/model chatgpt                 # fetch this account's models, then select a returned id
 ```
 
 - Tokens live in `~/.config/stacky/auth.json` (mode `0600`) and refresh
@@ -273,12 +274,25 @@ stacky
 
 ### Model lists are fetched, not hardcoded
 
-`/model` asks each provider for *its* model list (including the ChatGPT backend
-under OAuth), ranks known ids first, and caches the result in memory and in
-`~/.config/stacky/models.json` for 10 minutes. Each provider is labelled with
-where its list came from — provider, cached, unverified fallback, or missing credentials —
-so you can tell fresh from stale. `/model refresh` forces a re-fetch; the
-built-in catalog is only used when a provider is unreachable.
+`/model` fetches fresh provider responses; `/model refresh chatgpt` targets one
+provider. OpenAI and DeepSeek use their models APIs, Anthropic follows all pages,
+and ChatGPT uses the versioned Codex discovery endpoint with OAuth account headers.
+Completions and menus use only API-provided IDs — **no hardcoded fallback list**.
+
+Successful responses are cached by provider/account in `~/.config/stacky/models.json`.
+If refresh fails, a saved API response is labelled with its timestamp and error.
+Without one, the list is unavailable, not replaced with guessed models. Network
+redirects, HTML gateway pages and authentication failures are shown explicitly.
+
+Diagnose the actual requests without the TUI:
+
+```bash
+npx --no-install stacky --list-models --provider chatgpt
+```
+
+This prints JSON and returns nonzero unless discovery reached the provider.
+See [model discovery](docs/model-discovery.md) for API contracts, cache behavior,
+and network-gateway troubleshooting.
 
 ## CLI
 
@@ -288,6 +302,7 @@ built-in catalog is only used when a provider is unreachable.
 --headless                 stream events to stdout instead of the TUI
 --provider <name>          openai | anthropic | deepseek | chatgpt (default: deepseek)
 --model <id>               model id override (default: deepseek-flash)
+--list-models              fetch provider lists as JSON (optionally --provider); no TUI
 --thinking                 keep the model's reasoning mode on (forces toolChoice auto)
 --cwd <path>               workspace root (default: cwd)
 --file-budget <tokens>     file working-set budget (default 24000)
@@ -334,7 +349,8 @@ src/
 │   ├── ai.ts               Vercel AI SDK adapter (streamText, toolChoice, reasoning)
 │   ├── tools.ts            AI SDK tool defs (no execute — the runtime executes)
 │   ├── providers.ts        openai/anthropic/deepseek model creation
-│   ├── catalog.ts          selectable model ids per provider
+│   ├── catalog.ts          startup defaults / legacy config hints (not discovery)
+│   ├── models.ts           provider APIs, pagination and identity-scoped caches
 │   ├── factory.ts          config -> LLM client + model info
 │   └── scripted.ts         ScriptedLLM (tests) + DemoLLM (--mock)
 └── tui/

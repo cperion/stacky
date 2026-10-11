@@ -9,6 +9,7 @@ import { DemoLLM } from "./llm/scripted.ts"
 import { configPath, loadConfig, saveConfig, type StackyConfig } from "./config.ts"
 import type { ProviderName } from "./llm/providers.ts"
 import { defaultModelFor, PROVIDERS } from "./llm/catalog.ts"
+import { listModels } from "./llm/models.ts"
 import { runApp } from "./tui/app.ts"
 import { runRepl } from "./tui/repl.ts"
 import type { SettingsController, UiResult } from "./tui/settings.ts"
@@ -21,6 +22,7 @@ const { values, positionals } = parseArgs({
     thinking: { type: "boolean" },
     provider: { type: "string" },
     model: { type: "string" },
+    "list-models": { type: "boolean", default: false },
     cwd: { type: "string" },
     task: { type: "string" },
     "file-budget": { type: "string" },
@@ -60,6 +62,13 @@ if (values.theme === "auto" || values.theme === "dark" || values.theme === "ligh
 if (values["file-budget"]) config.fileBudgetTokens = numberOption(values["file-budget"], config.fileBudgetTokens)
 if (values["conversation-budget"])
   config.conversationBudgetTokens = numberOption(values["conversation-budget"], config.conversationBudgetTokens)
+
+if (values["list-models"]) {
+  const providers = values.provider ? [config.provider] : PROVIDERS
+  const lists = await Promise.all(providers.map(async (provider) => ({ provider, ...await listModels(provider, { force: true }) })))
+  console.log(JSON.stringify(lists, null, 2))
+  process.exit(lists.every((list) => list.source === "api") ? 0 : 1)
+}
 
 const usingMock = Boolean(values.mock)
 let info: ModelInfo
@@ -236,6 +245,8 @@ Options:
   --headless               Run without the TUI (streams events to stdout)
   --provider <name>        openai | anthropic | deepseek | chatgpt (default: deepseek)
   --model <id>             Model id override (default: deepseek-flash)
+  --list-models            Fetch model lists as JSON; optionally filter with --provider
+                          Exit 0 only on fresh API responses; failures include diagnostics
   --thinking               Keep the model's reasoning mode on (forces toolChoice auto)
   --cwd <path>             Workspace root (default: current directory)
   --file-budget <tokens>   File working-set token budget (default: 24000)

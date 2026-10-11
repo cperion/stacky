@@ -1,7 +1,7 @@
 import { BoxRenderable, TextareaRenderable, TextRenderable, bold, dim, fg, reverse, type CliRenderer } from "@opentui/core"
 import { PROVIDERS } from "../llm/catalog.ts"
-import { cachedModels, listModels, type ModelSource } from "../llm/models.ts"
-import { hasApiKey, type ProviderName } from "../llm/providers.ts"
+import { listModels, modelListSnapshot } from "../llm/models.ts"
+import type { ProviderName } from "../llm/providers.ts"
 import { applyCompletion, completionSet, PromptHistory, type Candidate, type CompletionSet } from "./complete.ts"
 import { concat, clipText, fit, plain, type Part } from "./render.ts"
 import { theme } from "./theme.ts"
@@ -29,7 +29,6 @@ export class Composer {
   private loading = false
   private feedback = ""
   private fetchedAt = 0
-  private sources = new Map<ProviderName, ModelSource>()
   private popupRows = 0
   private promptRows = 3
   private reportedHeight = 3
@@ -180,12 +179,9 @@ export class Composer {
     // Avoid disk/auth reads on every ordinary keystroke.
     if (!/^\/models?\s/.test(this.input.plainText)) return []
     return PROVIDERS.flatMap((provider) => {
-      const available = hasApiKey(provider)
-      const source = this.sources.get(provider)
-      const description = !available
-        ? (provider === "chatgpt" ? "sign in: /login chatgpt" : "API key required")
-        : source === "api" ? "provider list" : source === "cache" ? "cached list" : "unverified list"
-      return cachedModels(provider).map((id) => ({
+      const list = modelListSnapshot(provider)
+      const description = list.source === "api" ? "from API" : list.error ? "saved API list · refresh failed" : "saved API list"
+      return list.ids.map((id) => ({
         value: `${provider}/${id}`,
         description: `${description}${provider === this.opts.provider() ? " · current provider" : ""}`,
       }))
@@ -193,15 +189,16 @@ export class Composer {
   }
 
   private async fetchModels(): Promise<void> {
-    if (this.loading || Date.now() - this.fetchedAt < 60_000) return
+    const undiscovered = PROVIDERS.some((provider) => {
+      const list = modelListSnapshot(provider)
+      return list.source === "unavailable" && !list.error
+    })
+    if (this.loading || (!undiscovered && Date.now() - this.fetchedAt < 60_000)) return
     this.loading = true
     this.fetchedAt = Date.now()
     this.paint()
     try {
-      await Promise.all(PROVIDERS.filter(hasApiKey).map(async (provider) => {
-        const result = await listModels(provider)
-        this.sources.set(provider, result.source)
-      }))
+      await Promise.all(PROVIDERS.map((provider) => listModels(provider, { force: true })))
     } finally {
       this.loading = false
       if (!this.disposed) this.refresh()
@@ -230,8 +227,21 @@ export class Composer {
     } else if (empty || this.feedback) {
       parts.push(dim(clipText(this.feedback || (this.loading ? "Fetching model lists…" : "No matches · /help for commands · /model refresh to update"), width)))
     }
+    let rows = visible.length ? visible.length + 1 : (empty || this.feedback) ? 1 : 0
+    if (!this.dismissed && /^\/models?\s/.test(this.input.plainText)) {
+      const qualified = /^\/models?\s+(\w+)\//.exec(this.input.plainText)?.[1]
+      const failures = PROVIDERS.filter((provider) => !qualified || qualified === provider)
+        .map((provider) => ({ provider, list: modelListSnapshot(provider) }))
+        .filter(({ list }) => list.error)
+        .slice(0, Math.max(1, Math.min(4, Math.floor(this.renderer.terminalHeight / 6))))
+      for (const { provider, list } of failures) {
+        if (rows > 0) parts.push(plain("\n"))
+        parts.push(dim(clipText(`${provider}: ${list.error}`, width)))
+        rows++
+      }
+    }
     this.popup.content = concat(parts)
-    this.popupRows = visible.length ? visible.length + 1 : (empty || this.feedback) ? 1 : 0
+    this.popupRows = rows
     this.promptRows = this.renderer.terminalHeight < 12 ? 1 : 3
     this.popup.height = this.popupRows
     this.prompt.height = this.promptRows

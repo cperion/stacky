@@ -1,3 +1,4 @@
+import { PROVIDERS } from "../llm/catalog.ts"
 import { COMMAND_NAMES, findCommand } from "./commands.ts"
 
 export type Completion = { text: string; cursor: number }
@@ -25,6 +26,8 @@ export function completionSet(line: string, cursor: number, models: readonly Can
   const query = token.toLowerCase()
   if (start === 0 && before.startsWith("/")) {
     candidates = COMMAND_NAMES.map((name) => ({ value: `/${name}`, description: findCommand(name)!.description }))
+  } else if (/^\/models?\s+refresh\s+\S*$/.test(before)) {
+    candidates = PROVIDERS.map((value) => ({ value, description: "fetch this provider's model API" }))
   } else {
     const match = /^\/(\S+)\s+\S*$/.exec(before)
     if (!match) return undefined

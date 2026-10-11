@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Composer } from "../src/tui/composer.ts"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { clearModelCache } from "../src/llm/models.ts"
+import { clearModelCache, listModels } from "../src/llm/models.ts"
 
 let setup: TestRendererSetup | undefined
 let composer: Composer | undefined
@@ -142,17 +142,51 @@ describe("shared composer keyboard", () => {
       delete process.env.DEEPSEEK_API_KEY
       process.env.STACKY_AUTH = join(dir, "no-auth.json")
       process.env.STACKY_MODELS = join(dir, "models.json")
-      writeFileSync(process.env.STACKY_MODELS, JSON.stringify({ openai: { ids: ["b", "a"], at: 0 } }))
+      globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "b" }, { id: "a" }] }), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch
+      await listModels("openai", { force: true })
       let resolve!: (value: Response) => void
       globalThis.fetch = (() => new Promise<Response>((done) => { resolve = done })) as unknown as typeof fetch
       const { mockInput, composer, sent } = await create()
       await mockInput.typeText("/model openai/")
       mockInput.pressTab() // b, the first cached candidate
-      resolve(new Response(JSON.stringify({ data: [{ id: "a" }, { id: "b" }] })))
+      resolve(new Response(JSON.stringify({ data: [{ id: "a" }, { id: "b" }] }), { headers: { "content-type": "application/json" } }))
       await new Promise((done) => setTimeout(done, 10))
       mockInput.pressEnter()
       expect(composer.input.plainText).toBe("/model openai/b ")
       expect(sent).toEqual([])
+    } finally {
+      globalThis.fetch = originalFetch
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key]
+        else process.env[key] = previous[index]
+      })
+      clearModelCache()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("failed discovery shows the gateway error and offers no catalog models", async () => {
+    const keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "STACKY_AUTH", "STACKY_MODELS"]
+    const previous = keys.map((key) => process.env[key])
+    const originalFetch = globalThis.fetch
+    const dir = mkdtempSync(join(tmpdir(), "stacky-discovery-ui-"))
+    try {
+      clearModelCache()
+      delete process.env.OPENAI_API_KEY
+      delete process.env.ANTHROPIC_API_KEY
+      process.env.DEEPSEEK_API_KEY = "test"
+      process.env.STACKY_AUTH = join(dir, "no-auth.json")
+      process.env.STACKY_MODELS = join(dir, "models.json")
+      globalThis.fetch = (async () => new Response(null, { status: 307, headers: { location: "https://gateway.zscloud.net/consent" } })) as unknown as typeof fetch
+      const { mockInput, composer, captureCharFrame, renderOnce } = await create(140, 30)
+      await mockInput.typeText("/model deepseek/")
+      await new Promise((done) => setTimeout(done, 10))
+      await renderOnce()
+      expect(captureCharFrame()).toContain("HTTP 307")
+      expect(captureCharFrame()).toContain("gateway.zscloud.net")
+      expect(captureCharFrame()).not.toContain("deepseek-flash")
+      mockInput.pressTab()
+      expect(composer.input.plainText).toBe("/model deepseek/")
     } finally {
       globalThis.fetch = originalFetch
       keys.forEach((key, index) => {

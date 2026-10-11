@@ -3,6 +3,7 @@ import { changeModel, type SettingsController, type UiMode } from "./settings.ts
 import type { StackyConfig } from "../config.ts"
 import { PROVIDERS } from "../llm/catalog.ts"
 import { listModels } from "../llm/models.ts"
+import { modelListSummary } from "./model-list.ts"
 import { hasApiKey } from "../llm/providers.ts"
 
 export type MenuContext = SettingsController & {
@@ -115,10 +116,12 @@ function modelItems(ctx: MenuContext): MenuItem[] {
       : provider === "chatgpt" ? "/login chatgpt first" : "API key required",
     items: async () => {
       // Opening a provider is an explicit request for its current list, not a stale catalog view.
-      const { ids, source } = await listModels(provider, { force: true })
+      const list = await listModels(provider, { force: true })
+      if (list.source === "unavailable") throw new Error(`${provider}: ${list.error ?? "No provider response."}`)
       return [
-        { kind: "separator", label: source === "api" ? "From provider" : source === "cache" ? "Cached · provider unavailable" : "Unverified fallback · provider unavailable" },
-        ...ids.map((model): MenuItem => ({
+        { kind: "separator", label: modelListSummary(list) },
+        ...(list.error ? [{ kind: "action" as const, label: "Why refresh failed", keepOpen: true, run: () => { throw new Error(list.error) } }] : []),
+        ...list.ids.map((model): MenuItem => ({
           kind: "action",
           label: model,
           checked: ctx.config.provider === provider && ctx.config.model === model,
