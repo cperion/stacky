@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ClosedFrame, TaskFrame } from "../src/agent/types.ts"
 import { FrameHistory } from "../src/memory/history.ts"
+import { MemoryStore } from "../src/memory/store.ts"
 
 type Stored = { ref: string; value: Record<string, unknown> }
 
@@ -9,7 +13,11 @@ type Filters = {
   frameId?: string
   type?: string
   query?: string
+  parentId?: string | null
   after?: number
+  before?: number
+  through?: number
+  order?: "asc" | "desc"
   limit?: number
 }
 
@@ -64,14 +72,21 @@ class FakeMemoryStore {
     this.filters.push(structuredClone(filter))
     const after = filter.after ?? 0
     const limit = filter.limit ?? 100
-    return this.eventRows
+    const matching = this.eventRows
       .filter(({ value }) => typeof value.seq === "number" && value.seq > after)
+      .filter(({ value }) => filter.before === undefined || (value.seq as number) < filter.before)
+      .filter(({ value }) => filter.through === undefined || (value.seq as number) <= filter.through)
       .filter(({ value }) => filter.agentId === undefined || value.agentId === filter.agentId)
       .filter(({ value }) => filter.frameId === undefined || value.frameId === filter.frameId)
       .filter(({ value }) => filter.type === undefined || value.type === filter.type)
+      .filter(({ value }) => {
+        if (filter.parentId === undefined) return true
+        const payload = value.payload as Record<string, unknown> | undefined
+        return payload?.parentId === filter.parentId
+      })
       .filter(({ value }) => filter.query === undefined || JSON.stringify(value).includes(filter.query))
-      .slice(0, limit)
-      .map((entry) => structuredClone(entry))
+    if (filter.order === "desc") matching.reverse()
+    return matching.slice(0, limit).map((entry) => structuredClone(entry))
   }
 
   close(): void {}
@@ -120,6 +135,11 @@ function payloadOf(value: Record<string, unknown>): Record<string, unknown> {
   return value.payload as Record<string, unknown>
 }
 
+const temporaryDirectories: string[] = []
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
 describe("FrameHistory durability", () => {
   test("records explicit ownership, immutable updates, and close artifact refs", () => {
     const store = new FakeMemoryStore()
@@ -137,6 +157,7 @@ describe("FrameHistory durability", () => {
     const open = store.events({ agentId: "agent-a", frameId: child.id, type: "frame.open" })[0]!
     const openPayload = payloadOf(open.value)
     expect(openPayload.parentId).toBe(parent.id)
+    expect(open.value.parentId).toBe(parent.id)
     expect(openPayload.parentRef).toBe(parentRef)
     expect(openPayload.spawnedFrom).toBe("foreign-child-frame-ref")
     expect(openPayload.resume).toBe("resume after delegated result")
@@ -164,7 +185,7 @@ describe("FrameHistory durability", () => {
     const one = frame("f1", "one")
     const two = frame("f2", "two")
     const oneRef = history.open(one)
-    history.open(two)
+    history.open(two, one.id)
     for (let index = 0; index < 22; index += 1) {
       history.event("tool.result", { marker: `one-${index}` }, one.id)
       if (index < 3) history.event("tool.result", { marker: `two-${index}` }, two.id)
@@ -201,9 +222,36 @@ describe("FrameHistory durability", () => {
     expect(result.searched).toBe(true)
     expect(result.text).toContain("literal [needle] in one")
     expect(result.text).not.toContain("literal [needle] in two")
+    expect(result.text).toContain("Linked text artifact bodies are not searched here")
     expect(store.filters.some((filter) =>
       filter.agentId === "agent-a" && filter.frameId === one.id && filter.query === "[needle]"
     )).toBe(true)
+  })
+
+  test("freezes search continuations and keeps the full query only in its descriptor", () => {
+    const store = new FakeMemoryStore()
+    const history = new FrameHistory(store as never, "agent-a")
+    const target = frame("f1", "search target")
+    const targetRef = history.open(target)
+    const longQuery = `needle-${"q".repeat(2_000)}`
+    for (let index = 0; index < 24; index += 1) {
+      history.event("message", { text: `${longQuery}-${index}` }, target.id)
+    }
+
+    const first = history.resolve(targetRef, longQuery)!
+    expect(first.text.length).toBeLessThanOrEqual(14_000)
+    const continuation = store.findRef((value) =>
+      value.kind === "history.search" && value.frameId === target.id && value.query === longQuery
+    )
+    expect(continuation).toBeDefined()
+    expect(first.text).toContain(`Continue search: ${continuation}`)
+    expect(store.get(continuation!).query).toBe(longQuery)
+    const frozenThrough = store.get(continuation!).through
+
+    history.event("message", { text: `${longQuery}-future` }, target.id)
+    const continued = history.resolve(continuation!)!
+    expect(continued.text).not.toContain("future")
+    expect(store.get(continuation!).through).toBe(frozenThrough)
   })
 
   test("resolves cross-agent frame links by descriptor ownership", () => {
@@ -244,7 +292,22 @@ describe("FrameHistory durability", () => {
     expect(final.text).toContain("END-MARKER")
   })
 
-  test("renders a compact useful local map without writing archive state", () => {
+  test("retains event continuation recovery when defensive clipping is required", () => {
+    const store = new FakeMemoryStore()
+    const history = new FrameHistory(store as never, `agent-${"a".repeat(15_000)}`)
+    const eventRef = history.event("tool.result", { output: "x".repeat(15_000) })
+
+    const document = history.resolve(eventRef)!
+    const continuation = store.findRef((value) =>
+      value.kind === "history.event-page" && value.eventRef === eventRef
+    )
+    expect(continuation).toBeDefined()
+    expect(document.text.length).toBeLessThanOrEqual(14_000)
+    expect(document.text).toContain("document clipped")
+    expect(document.text).toContain(`Continue event: ${continuation}`)
+  })
+
+  test("renders a compact useful local map using only bounded indexed queries", () => {
     const store = new FakeMemoryStore()
     const history = new FrameHistory(store as never, "agent-a")
     const parent = frame("f1", "parent task")
@@ -260,6 +323,7 @@ describe("FrameHistory durability", () => {
     history.event("message", { text: "RAW SECRET TURN MUST NOT LEAK" }, current.id)
 
     const writesBefore = store.putCalls
+    store.filters.length = 0
     const context = history.context([parent, current])
     expect(store.putCalls).toBe(writesBefore)
     expect(context.length).toBeLessThanOrEqual(4_000)
@@ -268,6 +332,76 @@ describe("FrameHistory durability", () => {
     expect(context).toContain("recent child [completed]")
     expect(context).toContain("finished sibling [blocked]")
     expect(context).not.toContain("RAW SECRET TURN MUST NOT LEAK")
+    expect(store.filters.every((filter) => filter.order === "desc" && (filter.limit ?? Infinity) <= 8)).toBe(true)
+    expect(store.filters).toContainEqual(expect.objectContaining({
+      type: "frame.open",
+      parentId: current.id,
+      order: "desc",
+      limit: 3,
+    }))
+    expect(store.filters).toContainEqual(expect.objectContaining({
+      type: "frame.close",
+      parentId: parent.id,
+      order: "desc",
+      limit: 8,
+    }))
+  })
+
+  test("uses descending limit-one lifecycle lookups instead of archive scans", () => {
+    const store = new FakeMemoryStore()
+    const history = new FrameHistory(store as never, "agent-a")
+    const parent = frame("f1", "parent")
+    const child = frame("f2", "child")
+    history.open(parent)
+    const childRef = history.open(child, parent.id)
+    history.update(child)
+    history.close(closed(child))
+    for (let index = 0; index < 500; index += 1) history.event("noise", { index })
+
+    store.filters.length = 0
+    history.resolve(childRef)
+    const lifecycle = store.filters.filter((filter) =>
+      filter.frameId === child.id && filter.type?.startsWith("frame.")
+    )
+    expect(lifecycle.length).toBe(3)
+    expect(lifecycle.every((filter) => filter.order === "desc" && filter.limit === 1)).toBe(true)
+    expect(store.filters).toContainEqual(expect.objectContaining({
+      agentId: "agent-a",
+      frameId: child.id,
+      order: "desc",
+      limit: 1,
+    }))
+    expect(store.filters.some((filter) => filter.limit === 200 && filter.through === undefined)).toBe(false)
+  })
+
+  test("integrates with the durable store across restart and indexed parent navigation", () => {
+    const directory = mkdtempSync(join(tmpdir(), "stacky-history-"))
+    temporaryDirectories.push(directory)
+    let store = new MemoryStore(directory)
+    const history = new FrameHistory(store, "durable-agent")
+    const parent = frame("f1", "durable parent")
+    const child = frame("f2", "durable child")
+    history.open(parent)
+    const childRef = history.open(child, parent.id)
+    history.event("message", { text: "durable observation" }, child.id)
+    history.close(closed(child, "completed"))
+    store.close()
+
+    store = new MemoryStore(directory)
+    const restored = new FrameHistory(store, "durable-agent")
+    const document = restored.resolve(childRef)!
+    expect(document.text).toContain("durable observation")
+    expect(document.text).toContain("Outcome: completed")
+    const context = restored.context([parent])
+    expect(context).toContain("durable child [completed]")
+    expect(store.events({
+      agentId: "durable-agent",
+      type: "frame.open",
+      parentId: parent.id,
+      order: "desc",
+      limit: 1,
+    })[0]?.value.frameId).toBe(child.id)
+    store.close()
   })
 
   test("returns undefined for missing and non-history references", () => {

@@ -13,7 +13,11 @@ type EventFilter = {
   frameId?: string
   type?: string
   query?: string
+  parentId?: string | null
   after?: number
+  before?: number
+  through?: number
+  order?: "asc" | "desc"
   limit?: number
 }
 
@@ -36,7 +40,6 @@ type FrameDetails = {
   parentId?: string
   parentRef?: string
   opened?: StoredEvent
-  latest?: StoredEvent
   closed?: StoredEvent
 }
 
@@ -47,6 +50,7 @@ const EVENT_CHARS_PER_PAGE = 10_000
 const MAX_DOCUMENT_CHARS = 14_000
 const MAX_SUMMARY_CHARS = 360
 const MAX_CONTEXT_CHARS = 4_000
+const CONTEXT_RELATION_QUERY_LIMIT = 8
 
 /**
  * Durable, reference-addressed navigation over one agent's task history.
@@ -157,12 +161,20 @@ export class FrameHistory {
 
   /** Archive an observable turn/action/result with its exact supplied payload. */
   event(type: string, payload: unknown, frameId?: string): string {
+    const archivedPayload = snapshot(payload)
     const value: Record<string, unknown> = {
       type,
       agentId: this.agentId,
-      payload: snapshot(payload),
+      payload: archivedPayload,
     }
     if (frameId !== undefined) value.frameId = frameId
+    // Keep the payload exact while exposing lifecycle ownership as indexed event
+    // metadata. Stores can populate or migrate parent indexes without parsing
+    // every event during a navigation query.
+    if (isRecord(archivedPayload)) {
+      const parentId = archivedPayload.parentId
+      if (typeof parentId === "string" || parentId === null) value.parentId = parentId
+    }
     return this.store.record(value)
   }
 
@@ -209,25 +221,25 @@ export class FrameHistory {
    */
   context(stack: readonly TaskFrame[]): string {
     const activeIds = new Set(stack.map((frame) => frame.id))
-    const opens = this.collectAll({ agentId: this.agentId, type: "frame.open" })
-    const closes = this.collectAll({ agentId: this.agentId, type: "frame.close" })
-    const openById = new Map<string, StoredEvent>()
-    const closeById = new Map<string, StoredEvent>()
-    for (const entry of opens) {
-      const id = stringField(entry.value, "frameId")
-      if (id !== undefined) openById.set(id, entry)
-    }
-    for (const entry of closes) {
-      const id = stringField(entry.value, "frameId")
-      if (id !== undefined) closeById.set(id, entry)
-    }
-
     const lines = [
       `History: ${this.rootRef}`,
-      `Local task map for ${this.agentId} (history refs are read-only):`,
+      `Local task map for ${oneLine(this.agentId, 160)} (history refs are read-only):`,
     ]
 
+    // The prompt map has fixed-size queries: its cost does not grow with the
+    // archived session. Per-frame lookups also make restart recovery possible
+    // without manufacturing descriptor refs during prompt rendering.
     const shownStack = stack.slice(-6)
+    const openById = new Map<string, StoredEvent>()
+    for (const frame of shownStack) {
+      const opened = this.latestEvent({
+        agentId: this.agentId,
+        frameId: frame.id,
+        type: "frame.open",
+      })
+      if (opened) openById.set(frame.id, opened)
+    }
+
     if (stack.length > shownStack.length) {
       lines.push(`- … ${stack.length - shownStack.length} older active frame(s)`)
     }
@@ -238,29 +250,41 @@ export class FrameHistory {
 
     const current = stack.at(-1)
     if (current) {
-      const children = opens
-        .filter((entry) => openParentId(entry) === current.id)
-        .slice(-3)
+      const children = this.store.events({
+        agentId: this.agentId,
+        type: "frame.open",
+        parentId: current.id,
+        order: "desc",
+        limit: 3,
+      })
       if (children.length > 0) {
         lines.push("Recent children:")
         for (const child of children) {
-          lines.push(this.contextFrameLine(child, closeById, "child"))
+          const childId = stringField(child.value, "frameId")
+          const closed = childId === undefined
+            ? undefined
+            : this.latestEvent({ agentId: this.agentId, frameId: childId, type: "frame.close" })
+          lines.push(this.contextFrameLine(child, "child", closed))
         }
       }
 
       const currentOpen = openById.get(current.id)
-      const parentId = currentOpen ? openParentId(currentOpen) : stack.at(-2)?.id
-      const siblings = opens
-        .filter((entry) => openParentId(entry) === parentId)
-        .filter((entry) => {
-          const id = stringField(entry.value, "frameId")
-          return id !== undefined && id !== current.id && !activeIds.has(id) && closeById.has(id)
-        })
-        .slice(-3)
+      const archivedParent = currentOpen && eventParentId(currentOpen)
+      const parentId = archivedParent !== undefined ? archivedParent : stack.at(-2)?.id ?? null
+      const siblings = this.store.events({
+        agentId: this.agentId,
+        type: "frame.close",
+        parentId,
+        order: "desc",
+        limit: CONTEXT_RELATION_QUERY_LIMIT,
+      }).filter((entry) => {
+        const id = stringField(entry.value, "frameId")
+        return id !== undefined && id !== current.id && !activeIds.has(id)
+      }).slice(0, 3)
       if (siblings.length > 0) {
         lines.push("Recently closed siblings:")
         for (const sibling of siblings) {
-          lines.push(this.contextFrameLine(sibling, closeById, "sibling"))
+          lines.push(this.contextFrameLine(sibling, "sibling"))
         }
       }
     }
@@ -278,7 +302,7 @@ export class FrameHistory {
     const scope: Scope = { scope: "agent", agentId, lowerBound: 0, through }
     const page = this.collectionPage(scope, 0, EVENTS_PER_PAGE)
     const lines = [
-      `# Agent history · ${agentId}`,
+      `# Agent history · ${oneLine(agentId, 180)}`,
       `Reference: ${ref}`,
       "Scope: this agent only. Every event below names its exact owner; frame-owned turns are not folded into parent frames.",
       "Oldest events are shown first.",
@@ -289,7 +313,7 @@ export class FrameHistory {
       const nextRef = this.pageRef(scope, page.nextAfter)
       lines.push("", `Continue: ${nextRef}`)
     }
-    return boundedDocument(lines, `History · ${agentId}`)
+    return boundedDocument(lines, `History · ${oneLine(agentId, 180)}`)
   }
 
   private renderFrame(ref: string, descriptor: Record<string, unknown>): HistoryDocument | undefined {
@@ -302,7 +326,7 @@ export class FrameHistory {
     const through = this.latestSequence({ agentId, frameId })
     const eventScope: Scope = { scope: "frame", agentId, frameId, lowerBound: 0, through }
     const eventPage = this.collectionPage(eventScope, 0, EVENTS_PER_PAGE)
-    const childThrough = this.latestSequence({ agentId, type: "frame.open" })
+    const childThrough = this.latestSequence({ agentId, type: "frame.open", parentId: frameId })
     const childScope: Scope = {
       scope: "children",
       agentId,
@@ -315,8 +339,8 @@ export class FrameHistory {
     const lines = [
       `# Frame · ${title}`,
       `Reference: ${ref}`,
-      `Owner: ${agentId}`,
-      `Frame ID: ${frameId}`,
+      `Owner: ${oneLine(agentId, 180)}`,
+      `Frame ID: ${oneLine(frameId, 180)}`,
     ]
     if (details.parentRef) lines.push(`Parent: ${details.parentRef}`)
     if (details.frame) {
@@ -400,7 +424,7 @@ export class FrameHistory {
     if (!scope || after === undefined) return undefined
     const page = this.collectionPage(scope, after, EVENTS_PER_PAGE)
     const lines = [
-      `# History page · ${scopeLabel(scope)}`,
+      `# History page · ${oneLine(scopeLabel(scope), 300)}`,
       `Immutable sequence range: (${after}, ${scope.through}]`,
       "",
       ...page.lines,
@@ -408,7 +432,7 @@ export class FrameHistory {
     if (page.nextAfter !== undefined) {
       lines.push("", `Continue: ${this.pageRef(scope, page.nextAfter)}`)
     }
-    return boundedDocument(lines, `History page · ${scopeLabel(scope)}`)
+    return boundedDocument(lines, `History page · ${oneLine(scopeLabel(scope), 180)}`)
   }
 
   private renderStoredSearch(descriptor: Record<string, unknown>): HistoryDocument | undefined {
@@ -421,11 +445,13 @@ export class FrameHistory {
 
   private renderSearch(scope: Scope, query: string, after: number): HistoryDocument {
     const page = this.collectionPage(scope, after, SEARCH_RESULTS_PER_PAGE, query)
+    const shownQuery = oneLine(JSON.stringify(query), 500)
     const lines = [
-      `# History search · ${JSON.stringify(query)}`,
-      `Scope: ${scopeLabel(scope)}`,
+      `# History search · ${shownQuery}`,
+      `Scope: ${oneLine(scopeLabel(scope), 300)}`,
       `Immutable sequence range: (${after}, ${scope.through}]`,
-      "Literal substring search over serialized events; no inferred terms.",
+      "Literal substring search over archived event descriptors; no inferred terms.",
+      "Linked text artifact bodies are not searched here; read/search their artifact refs explicitly.",
       "",
       ...page.lines,
     ]
@@ -438,7 +464,7 @@ export class FrameHistory {
       })
       lines.push("", `Continue search: ${nextRef}`)
     }
-    const document = boundedDocument(lines, `History search · ${query}`)
+    const document = boundedDocument(lines, `History search · ${oneLine(query, 180)}`)
     return { ...document, searched: true }
   }
 
@@ -508,10 +534,15 @@ export class FrameHistory {
       const filter: EventFilter = {
         agentId: scope.agentId,
         after: cursor,
+        through: scope.through,
+        order: "asc",
         limit: SCAN_BATCH,
       }
       if (scope.scope === "frame") filter.frameId = scope.frameId
-      if (scope.scope === "children") filter.type = "frame.open"
+      if (scope.scope === "children") {
+        filter.type = "frame.open"
+        filter.parentId = scope.parentId ?? null
+      }
       if (query !== undefined) filter.query = query
 
       const batch = this.store.events(filter)
@@ -554,9 +585,18 @@ export class FrameHistory {
   private hasMatchingAfter(scope: Scope, after: number, query?: string): boolean {
     let cursor = after
     while (cursor < scope.through) {
-      const filter: EventFilter = { agentId: scope.agentId, after: cursor, limit: SCAN_BATCH }
+      const filter: EventFilter = {
+        agentId: scope.agentId,
+        after: cursor,
+        through: scope.through,
+        order: "asc",
+        limit: SCAN_BATCH,
+      }
       if (scope.scope === "frame") filter.frameId = scope.frameId
-      if (scope.scope === "children") filter.type = "frame.open"
+      if (scope.scope === "children") {
+        filter.type = "frame.open"
+        filter.parentId = scope.parentId ?? null
+      }
       if (query !== undefined) filter.query = query
       const batch = this.store.events(filter)
       if (batch.length === 0) return false
@@ -580,66 +620,45 @@ export class FrameHistory {
   }
 
   private latestSequence(filter: EventFilter): number {
-    let cursor = filter.after ?? 0
-    while (true) {
-      const batch = this.store.events({ ...filter, after: cursor, limit: SCAN_BATCH })
-      if (batch.length === 0) return cursor
-      let advanced = false
-      for (const entry of batch) {
-        const seq = numberField(entry.value, "seq")
-        if (seq !== undefined && seq > cursor) {
-          cursor = seq
-          advanced = true
-        }
-      }
-      if (!advanced || batch.length < SCAN_BATCH) return cursor
-    }
+    const latest = this.latestEvent(filter)
+    return latest ? numberField(latest.value, "seq") ?? 0 : 0
   }
 
-  private collectAll(filter: EventFilter): StoredEvent[] {
-    const entries: StoredEvent[] = []
-    let cursor = filter.after ?? 0
-    while (true) {
-      const batch = this.store.events({ ...filter, after: cursor, limit: SCAN_BATCH })
-      if (batch.length === 0) break
-      let advanced = false
-      for (const entry of batch) {
-        const seq = numberField(entry.value, "seq")
-        if (seq !== undefined && seq > cursor) {
-          cursor = seq
-          advanced = true
-          entries.push(entry)
-        }
-      }
-      if (!advanced || batch.length < SCAN_BATCH) break
-    }
-    return entries
+  private latestEvent(filter: EventFilter): StoredEvent | undefined {
+    return this.store.events({ ...filter, order: "desc", limit: 1 })[0]
   }
 
   private frameDetails(agentId: string, frameId: string): FrameDetails {
-    const events = this.collectAll({ agentId, frameId })
-    const details: FrameDetails = {}
-    for (const entry of events) {
-      const type = stringField(entry.value, "type")
-      const payload = recordField(entry.value, "payload")
-      const storedFrame = payload && (recordField(payload, "frame") ?? recordField(recordField(payload, "closed"), "intent"))
-      if (storedFrame && isTaskFrame(storedFrame)) details.frame = storedFrame
-      const frameRef = payload && stringField(payload, "frameRef")
-      if (frameRef) details.frameRef = frameRef
-      if (type === "frame.open") {
-        details.opened = entry
-        details.parentId = nullableStringField(payload, "parentId")
-        details.parentRef = payload && stringField(payload, "parentRef")
-      }
-      if (type === "frame.close") details.closed = entry
-      details.latest = entry
+    const opened = this.latestEvent({ agentId, frameId, type: "frame.open" })
+    const updated = this.latestEvent({ agentId, frameId, type: "frame.update" })
+    const closed = this.latestEvent({ agentId, frameId, type: "frame.close" })
+    const lifecycle = [opened, updated, closed]
+      .filter((entry): entry is StoredEvent => entry !== undefined)
+      .sort((left, right) => (numberField(right.value, "seq") ?? 0) - (numberField(left.value, "seq") ?? 0))
+    const latest = lifecycle[0]
+    const latestPayload = latest && recordField(latest.value, "payload")
+    const storedFrame = latestPayload
+      && (recordField(latestPayload, "frame") ?? recordField(recordField(latestPayload, "closed"), "intent"))
+    const ownershipPayload = (opened && recordField(opened.value, "payload")) ?? latestPayload
+
+    return {
+      ...(storedFrame && isTaskFrame(storedFrame) ? { frame: storedFrame } : {}),
+      ...(latestPayload && stringField(latestPayload, "frameRef")
+        ? { frameRef: stringField(latestPayload, "frameRef") }
+        : {}),
+      ...(ownershipPayload && nullableStringField(ownershipPayload, "parentId")
+        ? { parentId: nullableStringField(ownershipPayload, "parentId") }
+        : {}),
+      ...(ownershipPayload && stringField(ownershipPayload, "parentRef")
+        ? { parentRef: stringField(ownershipPayload, "parentRef") }
+        : {}),
+      ...(opened ? { opened } : {}),
+      ...(closed ? { closed } : {}),
     }
-    return details
   }
 
   private findOwnership(agentId: string, frameId: string): { parentId?: string; parentRef?: string } | undefined {
-    const events = this.collectAll({ agentId, frameId, type: "frame.open" })
-    const opened = events[0]
+    const opened = this.latestEvent({ agentId, frameId, type: "frame.open" })
     if (!opened) return undefined
     const payload = recordField(opened.value, "payload")
     return {
@@ -655,18 +674,15 @@ export class FrameHistory {
     return payload && stringField(payload, "frameRef")
   }
 
-  private contextFrameLine(
-    opened: StoredEvent,
-    closes: ReadonlyMap<string, StoredEvent>,
-    label: string,
-  ): string {
-    const frameId = stringField(opened.value, "frameId") ?? "unknown"
-    const payload = recordField(opened.value, "payload")
-    const frame = payload && recordField(payload, "frame")
+  private contextFrameLine(entry: StoredEvent, label: string, closed?: StoredEvent): string {
+    const frameId = stringField(entry.value, "frameId") ?? "unknown"
+    const payload = recordField(entry.value, "payload")
+    const frame = payload
+      && (recordField(payload, "frame") ?? recordField(recordField(payload, "closed"), "intent"))
     const title = frame && stringField(frame, "title") || frameId
     const frameRef = payload && stringField(payload, "frameRef") || "(missing ref)"
-    const closed = closes.get(frameId)
-    const outcome = closed ? closeOutcome(closed) ?? "closed" : "open"
+    const terminal = closed ?? (stringField(entry.value, "type") === "frame.close" ? entry : undefined)
+    const outcome = terminal ? closeOutcome(terminal) ?? "closed" : "open"
     return `- ${label} ${oneLine(title, 100)} [${outcome}] — ${frameRef}`
   }
 }
@@ -744,8 +760,15 @@ function closeOutcome(entry: StoredEvent): string | undefined {
 }
 
 function openParentId(entry: StoredEvent): string | undefined {
+  const parentId = eventParentId(entry)
+  return typeof parentId === "string" ? parentId : undefined
+}
+
+function eventParentId(entry: StoredEvent): string | null | undefined {
   const payload = recordField(entry.value, "payload")
-  return nullableStringField(payload, "parentId")
+  if (!payload || !("parentId" in payload)) return undefined
+  const parentId = payload.parentId
+  return typeof parentId === "string" || parentId === null ? parentId : undefined
 }
 
 function scopeLabel(scope: Scope): string {
@@ -760,12 +783,23 @@ function scopeLabel(scope: Scope): string {
 }
 
 function boundedDocument(lines: string[], title: string): HistoryDocument {
+  const safeTitle = oneLine(title, 240)
   const text = lines.join("\n")
-  if (text.length <= MAX_DOCUMENT_CHARS) return { text, title }
-  // Individual summaries are already bounded; this is a final defensive guard.
+  if (text.length <= MAX_DOCUMENT_CHARS) return { text, title: safeTitle }
+
+  // Keep generated recovery links even if a hostile/legacy descriptor makes a
+  // header unexpectedly large. Query text is display-clipped by callers; the
+  // full value remains in the immutable search descriptor.
+  const continuations = lines
+    .filter((line) => /^Continue(?: frame events| children| search| event)?: \S+$/.test(line))
+    .slice(-4)
+    .map((line) => oneLine(line, 500))
+  const footer = continuations.length > 0 ? `\n${continuations.join("\n")}` : ""
+  const marker = "\n… document clipped; read an exact event or continuation reference for more"
+  const prefixLength = Math.max(0, MAX_DOCUMENT_CHARS - marker.length - footer.length)
   return {
-    text: `${text.slice(0, MAX_DOCUMENT_CHARS - 80)}\n… document clipped; follow the last visible event reference for exact data`,
-    title,
+    text: `${text.slice(0, prefixLength)}${marker}${footer}`,
+    title: safeTitle,
   }
 }
 
