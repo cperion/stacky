@@ -13,8 +13,8 @@ import {
 
 export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   bash: "Run a shell command in the workspace and observe its output. Use for search, inspection, tests, git, builds.",
-  read: "Read a file's current contents AND promote it into the live file working set. The runtime always re-reads active files from disk, so this is the authoritative way to see code.",
-  edit: 'Modify a file by exact-text replacement. Promotes the file into the working set. You must read() the file first; editing an existing file that is not in the working set is refused. Use oldText="" to create a new file. oldText must match uniquely unless replaceAll is true.',
+  read: "Inspect/search/page a resource and promote a bounded view into LRU working context. Supply path for a current file OR an exact ref for a file, page, artifact, frame or event. Optional find is literal text. Follow returned refs, never guess them. LIVE file lines have editable anchors; historical/log views are read-only. Evicted content can be read back.",
+  edit: 'Replace inclusive visible line anchors with {edits:[{from,through,text}]}; insert with {before,text} or {after,text}. All changes target one current file revision, with no overlapping or unseen lines. Returns refreshed views and new anchors. Compatibility: {path,edits:[{oldText,newText}]} uses the same visible-current guard; oldText="" creates a missing file.',
   push: "Enter a new task frame that must be handled before the current frame can resume. This is how you record a discovered prerequisite or a focused sub-investigation. It becomes the new top of stack.",
   spawn:
     "Delegate a self-contained sub-task to a fresh subagent with its own task stack and file working set. Use it to keep your own context clean when a sub-task is independent. The subagent runs to completion and returns a report.",

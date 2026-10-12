@@ -51,6 +51,7 @@ export class TaskStack {
   /** Push a new frame; it becomes the top of stack. */
   push(action: PushAction, now = Date.now()): TaskFrame {
     const frame = createFrame(action, now)
+    if (this.top) frame.parentId = this.top.id
     this.frames.push(frame)
     return frame
   }

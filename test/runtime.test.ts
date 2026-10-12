@@ -154,7 +154,7 @@ describe("AgentRuntime", () => {
     // First edit was refused; the retry after read() succeeded.
     expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("hello!")
     const observations = runtime.snapshot().conversation.filter((e) => e.role === "observation")
-    expect(observations.some((o) => o.text.includes("not in your working set"))).toBe(true)
+    expect(observations.some((o) => o.text.includes("No current visible coverage"))).toBe(true)
   })
 
   test("creates a new file when oldText is empty", async () => {

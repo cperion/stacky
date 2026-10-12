@@ -96,10 +96,13 @@ export const bashSchema = z.object({
 })
 
 export const readSchema = z.object({
-  path: z.string().min(1).describe("File path relative to the workspace root (or absolute)."),
-})
+  path: z.string().min(1).optional().describe("Current file path. Supply exactly one of path or ref."),
+  ref: z.string().min(1).optional().describe("Exact reference from context/history: file, view, page, line, artifact, frame or event. Never invent references."),
+  find: z.string().min(1).max(2000).optional().describe("Literal text to locate in this resource. History search covers event descriptors; follow artifact refs to search their bodies."),
+  budgetTokens: z.number().int().min(128).max(24000).optional().describe("Desired view budget in estimated tokens, capped by total working memory; default at most 4096."),
+}).refine((input) => (input.path === undefined) !== (input.ref === undefined), "Supply exactly one of path or ref")
 
-export const editPatchSchema = z.object({
+const textEditSchema = z.object({
   path: z.string().min(1).describe("File path relative to the workspace root (or absolute)."),
   edits: z
     .array(
@@ -113,6 +116,26 @@ export const editPatchSchema = z.object({
     )
     .min(1),
 })
+
+const anchorEditSchema = z.object({
+  from: z.string().min(1).optional(),
+  through: z.string().min(1).optional(),
+  before: z.string().min(1).optional(),
+  after: z.string().min(1).optional(),
+  text: z.string().describe("Replacement complete lines. Empty text deletes a range; before/after explicitly insert."),
+}).strict().refine((edit) => {
+  const range = edit.from !== undefined && edit.through !== undefined && edit.before === undefined && edit.after === undefined
+  const insertion = edit.from === undefined && edit.through === undefined && ((edit.before === undefined) !== (edit.after === undefined))
+  return range || insertion
+}, "Use from+through (inclusive), or before, or after")
+
+// Keep the tool schema an object at its root (required by provider function APIs).
+export const editPatchSchema = z.object({
+  path: textEditSchema.shape.path.optional().describe("Only for compatibility text replacement or creating a missing file; omit for anchor edits."),
+  edits: z.array(z.union([anchorEditSchema, textEditSchema.shape.edits.element])).min(1).max(100),
+}).strict().refine((input) => input.path === undefined
+  ? input.edits.every((edit) => "text" in edit)
+  : input.edits.every((edit) => "oldText" in edit), "Anchor edits omit path; text replacements require path. Never mix formats.")
 
 export const ACTION_SCHEMAS = {
   bash: bashSchema,

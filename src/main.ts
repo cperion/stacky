@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util"
 import { resolve } from "node:path"
 import { AgentRuntime } from "./agent/runtime.ts"
-import { attachSessionAutosave, loadSession } from "./agent/persistence.ts"
+import { attachSessionAutosave, loadSession, saveSession } from "./agent/persistence.ts"
 import { attachTraceLogger } from "./agent/logger.ts"
 import { buildLLM } from "./llm/factory.ts"
 import { DemoLLM } from "./llm/scripted.ts"
@@ -106,13 +106,14 @@ if (usingMock) {
 if (values.trace) attachTraceLogger(runtime.bus, resolve(values.trace))
 
 let resumeNote = ""
+let stopAutosave: (() => void) | undefined
 if (values.session) {
   const sessionPath = resolve(values.session)
   if (loadSession(runtime, sessionPath)) {
     const snapshot = runtime.snapshot()
     resumeNote = `resumed session: ${snapshot.stack.length} open frame(s), ${snapshot.closedFrames.length} closed`
   }
-  attachSessionAutosave(runtime, sessionPath)
+  stopAutosave = attachSessionAutosave(runtime, sessionPath)
 }
 
 const configFilePath = values.config ? resolve(values.config) : configPath()
@@ -133,6 +134,7 @@ const settings: SettingsController = {
 const positionalTask = positionals[0]
 const initialTask = values.task ?? positionalTask
 
+try {
 if (values.headless) {
   if (resumeNote) console.log(resumeNote)
   await runHeadless(runtime, initialTask)
@@ -168,6 +170,12 @@ if (values.headless) {
     }
     break
   }
+}
+} finally {
+  await runtime.stop()
+  stopAutosave?.()
+  try { if (values.session) saveSession(runtime, resolve(values.session)) }
+  finally { runtime.dispose() }
 }
 
 async function runHeadless(runtime: AgentRuntime, task: string | undefined): Promise<void> {

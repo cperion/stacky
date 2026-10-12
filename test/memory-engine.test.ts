@@ -241,10 +241,13 @@ describe("WorkspaceMemory", () => {
     const { cwd, store, memory } = setup(500)
     const path = join(cwd, "coverage.txt")
     writeFileSync(path, Array.from({ length: 30 }, (_, index) => `row-${index}`).join("\n"))
-    expect(memory.read({ path: "coverage.txt", find: "row-0", budgetTokens: 55 }).ok).toBe(true)
-    expect(memory.read({ path: "coverage.txt", find: "row-20", budgetTokens: 55 }).ok).toBe(true)
+    expect(memory.read({ path: "coverage.txt", budgetTokens: 55 }).ok).toBe(true)
+    const first = memory.materialize().match(/^\[([0-9a-f]+)\|1\]/m)?.[1] as string
+    expect(memory.read({ path: "coverage.txt", find: "row-20", budgetTokens: 200 }).ok).toBe(true)
+    const hit = memory.materialize().match(/Line 21: read\(\{ref:"([0-9a-f]+)"\}\)/)?.[1] as string
+    expect(hit).toBeDefined()
+    expect(memory.read({ ref: hit, budgetTokens: 80 }).ok).toBe(true)
     const shown = memory.materialize()
-    const first = shown.match(/^\[([0-9a-f]+)\|1\]/m)?.[1] as string
     const distant = shown.match(/^\[([0-9a-f]+)\|21\]/m)?.[1] as string
     expect(first).toBeDefined()
     expect(distant).toBeDefined()
@@ -353,8 +356,10 @@ describe("WorkspaceMemory", () => {
     const captured = memory.capture(oversized, { title: "oversized" })
     expect(captured.ref).toBeDefined()
     expect(store.loadText(captured.ref as string).text).not.toContain("UNAVAILABLE_SUFFIX")
-    expect(memory.read({ ref: captured.ref as string, find: "UNAVAILABLE_SUFFIX" }).ok).toBe(false)
-    expect(memory.materialize()).not.toContain("UNAVAILABLE_SUFFIX")
+    memory.setBudget(500)
+    expect(memory.read({ ref: captured.ref as string, find: "UNAVAILABLE_SUFFIX" }).ok).toBe(true)
+    expect(memory.materialize()).toContain("No literal matches")
+    expect(memory.materialize()).toContain("omitted bytes are unavailable")
     store.close()
   })
 })

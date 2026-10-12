@@ -164,6 +164,7 @@ export class FrameHistory {
     const archivedPayload = snapshot(payload)
     const value: Record<string, unknown> = {
       type,
+      at: Date.now(),
       agentId: this.agentId,
       payload: archivedPayload,
     }
@@ -343,6 +344,9 @@ export class FrameHistory {
       `Frame ID: ${oneLine(frameId, 180)}`,
     ]
     if (details.parentRef) lines.push(`Parent: ${details.parentRef}`)
+    const opening = details.opened && recordField(details.opened.value, "payload")
+    if (opening?.spawnedFrom) lines.push(`Delegated from: ${String(opening.spawnedFrom)}`)
+    if (typeof opening?.resume === "string") lines.push(`Parent suspension point: ${oneLine(opening.resume, 300)}`)
     if (details.frame) {
       lines.push(`Intent: ${oneLine(details.frame.why, 400)}`)
       lines.push(`Scope: ${oneLine(details.frame.scope, 300)}`)

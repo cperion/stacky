@@ -15,13 +15,16 @@ function asRecord(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" ? (input as Record<string, unknown>) : {}
 }
 
-type EditOperation = { oldText?: unknown; newText?: unknown }
+type EditOperation = { oldText?: unknown; newText?: unknown; from?: unknown; through?: unknown; before?: unknown; after?: unknown; text?: unknown }
 
 function diffText(path: string, edits: EditOperation[]): string {
   const lines = [edits.length > 1 ? `${path}  ·  ${edits.length} edits` : path]
   for (const edit of edits) {
     const oldText = text(edit.oldText) ?? ""
-    const newText = text(edit.newText) ?? ""
+    const newText = text(edit.newText) ?? text(edit.text) ?? ""
+    if (edit.from) lines.push(`@ ${String(edit.from)} through ${String(edit.through)}`)
+    else if (edit.before) lines.push(`@ before ${String(edit.before)}`)
+    else if (edit.after) lines.push(`@ after ${String(edit.after)}`)
     if (oldText) for (const line of oldText.split("\n")) lines.push(`- ${line}`)
     if (newText) for (const line of newText.split("\n")) lines.push(`+ ${line}`)
   }
@@ -34,9 +37,9 @@ export function describeToolCall(tool: string, input: unknown): string {
     case "bash":
       return firstLine(text(args.command) ?? "shell command")
     case "read":
-      return text(args.path) ?? "file"
+      return `${text(args.path) ?? (text(args.ref) ? `ref ${text(args.ref)}` : "resource")}${text(args.find) ? ` · find ${text(args.find)}` : ""}`
     case "edit": {
-      const path = text(args.path) ?? "file"
+      const path = text(args.path) ?? "anchored region"
       const edits = Array.isArray(args.edits) ? (args.edits as EditOperation[]) : []
       return diffText(path, edits)
     }

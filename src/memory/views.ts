@@ -115,6 +115,7 @@ export class WorkspaceMemory {
   private views = new Map<string, View>()
   private clock = 0
   private stableCounter = 0
+  private notices: string[] = []
 
   constructor(options: WorkspaceMemoryOptions) {
     this.cwd = resolve(options.cwd)
@@ -134,28 +135,16 @@ export class WorkspaceMemory {
     }
 
     try {
-      const loaded = request.path !== undefined
+      let loaded = request.path !== undefined
         ? this.loadLivePath(request.path)
         : this.loadReference(request.ref as string, request.find)
       if (!loaded) return failure(`Reference ${request.ref} is not readable. Recovery: verify the exact ref.`)
 
-      let cursorLine = loaded.startLine ?? 0
-      let cursorChar = loaded.startChar ?? 0
       if (request.find !== undefined && request.find.length > 0 && !loaded.searched) {
-        const found = loaded.text.indexOf(request.find)
-        if (found < 0) {
-          return failure(
-            `Literal text not found in ${loaded.title}. Recovery: read(${loaded.live ? `path=${quote(loaded.path ?? loaded.title)}` : `ref=${quote(loaded.sourceRef)}`}).`,
-          )
-        }
-        const lines = parseLines(loaded.text)
-        cursorLine = lineAtOffset(lines, found)
-        const line = lines[cursorLine]
-        const offsetInLine = found - (line?.start ?? found)
-        cursorChar = estimateTokens(line?.text ?? "") > Math.max(MIN_VIEW_TOKENS, limit)
-          ? safeCodePointStart(line?.text ?? "", Math.max(0, offsetInLine - 24))
-          : 0
+        loaded = this.searchDocument(loaded, request.find)
       }
+      const cursorLine = loaded.startLine ?? 0
+      const cursorChar = loaded.startChar ?? 0
       const { view, evicted } = this.promote(loaded, cursorLine, cursorChar, limit)
       return {
         ok: true,
@@ -174,7 +163,7 @@ export class WorkspaceMemory {
       return { ok: false, message: `Captured ${meta.title} as ${ref}, but the view budget is below ${MIN_VIEW_TOKENS} tokens.`, ref, evicted: [] }
     }
     const descriptor = this.store.loadText(ref)
-    const loaded = this.loadImmutableText(ref, descriptor.text, descriptor.title, descriptor.omittedBytes === 0)
+    const loaded = this.loadImmutableText(ref, descriptor.text, descriptor.title, descriptor.omittedBytes === 0 && descriptor.upstreamTruncated !== true)
     try {
       const { view, evicted } = this.promote(loaded, 0, 0, Math.min(DEFAULT_VIEW_BUDGET, this.budgetTokens))
       return {
@@ -196,8 +185,14 @@ export class WorkspaceMemory {
   /** Refreshes live ranges without touching recency, then renders stable-order views. */
   materialize(): string {
     this.refreshLiveViews()
-    this.evictToBudget()
+    this.notices.push(...this.evictToBudget())
     return this.combinedRendered()
+  }
+
+  takeNotices(): string[] {
+    const notices = this.notices
+    this.notices = []
+    return notices
   }
 
   /** Compatibility listing: multiple resident views of one live file are grouped. */
@@ -253,6 +248,7 @@ export class WorkspaceMemory {
 
   clear(): void {
     this.views.clear()
+    this.notices = []
   }
 
   restorePaths(paths: string[]): void {
@@ -294,7 +290,12 @@ export class WorkspaceMemory {
         if (value.kind === "live") {
           if (typeof value.versionRef !== "string") continue
           const savedVersion = this.store.get(value.versionRef)
-          if (savedVersion.revision !== loaded.revision) continue
+          // File beginnings remain meaningful after changes; nonzero semantic
+          // selections require a fresh explicit read rather than guessing an anchor.
+          if (savedVersion.revision !== loaded.revision && (value.line !== 0 || value.char !== 0)) {
+            this.notices.push(`Saved region changed; read({path:${quote(value.path!)}}) to locate it again`)
+            continue
+          }
         }
         this.promote(
           loaded,
@@ -303,7 +304,7 @@ export class WorkspaceMemory {
           Math.min(this.budgetTokens, normalizeBudget(value.limitTokens)),
         )
       } catch {
-        // Restore is best-effort. Missing exact refs remain missing rather than being guessed.
+        this.notices.push(`Saved view unavailable; ${value.path ? `read({path:${quote(value.path)}})` : `read({ref:${quote(value.ref ?? "unknown")}})`}`)
       }
     }
   }
@@ -338,7 +339,7 @@ export class WorkspaceMemory {
     }
     if (descriptor.kind === "text") {
       const artifact = this.store.loadText(ref)
-      return this.loadImmutableText(ref, artifact.text, artifact.title, artifact.omittedBytes === 0)
+      return this.loadImmutableText(ref, artifact.text, artifact.title, artifact.omittedBytes === 0 && artifact.upstreamTruncated !== true)
     }
     if (descriptor.kind === "file-version" || descriptor.kind === "document-version") {
       return this.loadVersion(ref, descriptor)
@@ -365,20 +366,20 @@ export class WorkspaceMemory {
       typeof descriptor.char === "number"
     ) {
       const snapshot = this.loadVersion(descriptor.versionRef)
-      let current = false
+      let current: LoadedDocument | undefined
+      let recoveryPath = descriptor.path
       try {
-        current = hashText(readFileSync(resolvePath(this.cwd, descriptor.path), "utf8")) === descriptor.revision
+        const resource = this.store.get(descriptor.fileRef)
+        if (typeof resource.absolutePath !== "string") throw new Error("File identity is missing")
+        recoveryPath = resource.absolutePath
+        const fresh = this.loadLivePath(resource.absolutePath)
+        if (fresh.revision === descriptor.revision) current = fresh
       } catch {
         // The exact old snapshot remains readable even if the current resource is unavailable.
       }
       return current
         ? {
-            ...snapshot,
-            sourceRef: descriptor.fileRef,
-            fileRef: descriptor.fileRef,
-            path: descriptor.path,
-            title: descriptor.path,
-            live: true,
+            ...current,
             startLine: descriptor.line,
             startChar: descriptor.char,
           }
@@ -388,13 +389,54 @@ export class WorkspaceMemory {
             live: false,
             startLine: descriptor.line,
             startChar: descriptor.char,
-            recoveryPath: descriptor.path,
+            recoveryPath: displayPath(this.cwd, resolvePath(this.cwd, recoveryPath)),
           }
+    }
+
+    if (descriptor.kind === "search-page" && typeof descriptor.versionRef === "string" && typeof descriptor.query === "string" && typeof descriptor.after === "number") {
+      const original = this.loadVersion(descriptor.versionRef)
+      // This flag only constructs file-page links. Opening each link independently
+      // checks the actual revision before granting live file authority.
+      return this.searchDocument({ ...original, live: descriptor.live === true }, descriptor.query, descriptor.after)
     }
 
     const resolved = this.resolveDocument?.(ref, find)
     if (!resolved) return undefined
     return { ...this.loadImmutableText(ref, resolved.text, resolved.title), searched: resolved.searched }
+  }
+
+  private searchDocument(source: LoadedDocument, query: string, after = 0): LoadedDocument {
+    const searchRef = this.store.put({ kind: "search-page", versionRef: source.versionRef, query, after, live: source.live })
+    const lines = parseLines(source.text)
+    const output = [`# Literal matches in ${source.title}`, `Query: ${JSON.stringify(query.slice(0, 240))}`, `Snapshot: ${source.versionRef}. Open a match to inspect its context; snippets do not authorize edits.`]
+    let position = source.text.indexOf(query, after)
+    let count = 0
+    while (position >= 0 && count < 20) {
+      const line = lineAtOffset(lines, position)
+      const cursorLine = Math.max(0, line - 2)
+      const currentLine = lines[line]!
+      const inLine = position - currentLine.start
+      const fragmented = currentLine.text.length > 2000
+      const target = this.store.put({
+        kind: source.live && source.fileRef && source.path ? "file-page" : "page",
+        versionRef: source.versionRef, revision: source.revision,
+        ...(source.fileRef ? { fileRef: source.fileRef } : {}), ...(source.path ? { path: source.path } : {}),
+        line: fragmented ? line : cursorLine,
+        char: fragmented ? safeCodePointStart(currentLine.text, Math.max(0, inLine - 40)) : 0,
+        title: source.title,
+      })
+      const snippet = currentLine.text.slice(Math.max(0, inLine - 40), inLine + Math.min(query.length, 100) + 80)
+      output.push(`Line ${line + 1}: read({ref:${quote(target)}}) · ${JSON.stringify(snippet)}`)
+      count++
+      position = source.text.indexOf(query, position + Math.max(1, query.length))
+    }
+    if (count === 0) output.push("No literal matches in this captured source.")
+    if (position >= 0) {
+      const next = this.store.put({ kind: "search-page", versionRef: source.versionRef, query, after: position, live: source.live })
+      output.push(`More matches: read({ref:${quote(next)}})`)
+    }
+    if (!source.complete) output.push("Search covers captured content only; omitted bytes are unavailable.")
+    return { ...this.loadImmutableText(searchRef, output.join("\n"), `Search · ${source.title}`), searched: true }
   }
 
   private loadImmutableText(ref: string, text: string, title: string, complete = true): LoadedDocument {
@@ -477,6 +519,7 @@ export class WorkspaceMemory {
     const reusable = [...this.views.values()].find((view) =>
       view.versionRef === loaded.versionRef &&
       view.live === loaded.live &&
+      view.limitTokens === limitTokens &&
       !view.invalidReason &&
       safeChar === 0 &&
       view.visibleLines.has(safeLine)
@@ -531,6 +574,10 @@ export class WorkspaceMemory {
   }
 
   private render(view: View, text: string): void {
+    this.store.batch(() => this.renderView(view, text))
+  }
+
+  private renderView(view: View, text: string): void {
     const lines = parseLines(text)
     view.visibleAnchors.clear()
     view.visibleLines.clear()

@@ -144,11 +144,23 @@ const COMMANDS: Command[] = [
   {
     name: "files",
     usage: "/files",
-    description: "show every file in the working context",
+    description: "show resident live file views (not archived files)",
     run: (_arg, ctx) => {
       const files = ctx.runtime.snapshot().files
       ctx.print(files.length ? files.map((file) => `${file.path}  ·  ${file.tokenCount} tokens`).join("\n") : "No files read yet.")
     },
+  },
+  {
+    name: "context",
+    usage: "/context",
+    description: "show the agent's last working views and references",
+    run: (_arg, ctx) => ctx.print(ctx.runtime.inspectContext()),
+  },
+  {
+    name: "history",
+    usage: "/history [ref]",
+    description: "browse durable frame/event history; follow continuation refs",
+    run: (arg, ctx) => ctx.print(ctx.runtime.inspectHistory(arg.trim() || undefined)),
   },
   {
     name: "status",
@@ -166,7 +178,8 @@ const COMMANDS: Command[] = [
           `  thinking  ${cfg.thinking ? "on" : "off"}`,
           `  theme     ${cfg.theme}`,
           `  depth     ${state.stack.length}`,
-          `  files     ${state.files.length} / ${cfg.fileBudgetTokens} tokens`,
+          `  context   ${state.memory?.views ?? state.files.length} views · ~${state.memory?.usedTokens ?? 0} / ${cfg.fileBudgetTokens} tokens`,
+          ...(state.memory ? [`  history   ${state.memory.historyRef} · ${state.memory.directory}`] : []),
           `  llm       ${state.metrics.llmCalls} calls · ${state.metrics.toolCalls} tools`,
         ].join("\n"),
       )
@@ -176,10 +189,10 @@ const COMMANDS: Command[] = [
     name: "new",
     aliases: ["clear", "reset"],
     usage: "/new",
-    description: "reset the session",
+    description: "clear active state (durable history is retained)",
     run: (_arg, ctx) => {
       ctx.runtime.reset()
-      ctx.print("Session reset.")
+      ctx.print("Active state cleared. Durable history remains available via /history.")
     },
   },
   {

@@ -17,6 +17,8 @@ export type Todo = {
 
 export type TaskFrame = {
   id: string
+  parentId?: string
+  historyRef?: string
   /** Monotonic creation order, for the linear history stripe. */
   seq: number
   /** Short imperative title for display (falls back to the first line of why). */
@@ -118,6 +120,9 @@ export type ConversationEntry = {
   role: ConversationRole
   text: string
   tokens: number
+  /** Durable provenance; the bounded transcript is not the archive. */
+  frameId?: string
+  eventRef?: string
   /** Set on "action" entries: the tool that was called, for display. */
   tool?: string
   /** Set on "subagent" entries: how deep the subagent is and what it was saying. */
@@ -154,6 +159,7 @@ export type AgentState = {
   userRequest?: UserRequestRecord
   metrics: Metrics
   streaming?: StreamingState
+  memory?: { historyRef: string; directory: string; usedTokens: number; budgetTokens: number; views: number }
 }
 
 export type Metrics = {
@@ -177,6 +183,7 @@ export type SessionSnapshot = {
   stack: TaskFrame[]
   closedFrames: ClosedFrame[]
   filePaths: string[]
+  memory?: { directory: string; cwd: string; agentId: string; views: unknown[] }
   userRequest?: UserRequestRecord
   metrics: Metrics
 }

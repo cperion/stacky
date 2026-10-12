@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import type { ModelAction, PopAction, PushAction, ToolName, TodoAction, UserRequestAction } from "../stack/schemas.ts"
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
+import type { EditAction, ReadAction, ModelAction, PopAction, PushAction, ToolName, TodoAction, UserRequestAction } from "../stack/schemas.ts"
 import type {
   AgentMode,
   AgentState,
@@ -11,16 +13,17 @@ import type {
   UserRequestRecord,
 } from "./types.ts"
 import { TaskStack } from "../stack/stack.ts"
+import { ACTION_SCHEMAS } from "../stack/schemas.ts"
 import { ConversationBuffer } from "./conversation.ts"
-import { FileWorkingSet, resolvePath } from "../files/lru.ts"
+import { MemoryStore } from "../memory/store.ts"
+import { WorkspaceMemory, type MemoryResult } from "../memory/views.ts"
+import { FrameHistory } from "../memory/history.ts"
 import { EventBus, type RuntimeEvent } from "./events.ts"
 import { buildSystemPrompt, buildUserPrompt } from "./prompt.ts"
 import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } from "../llm/client.ts"
 import { createMetrics } from "./metrics.ts"
 import { describeToolCall } from "./format-action.ts"
 import { runBash } from "../tools/bash.ts"
-import { runRead } from "../tools/read.ts"
-import { runEdit } from "../tools/edit.ts"
 
 export type AgentRuntimeOptions = {
   cwd: string
@@ -37,6 +40,9 @@ export type AgentRuntimeOptions = {
   maxDepth?: number
   /** Subagents may not ask the human a question; they report instead. */
   allowUser?: boolean
+  /** Override durable archive directory; child agents share a store, never views. */
+  memoryDirectory?: string
+  memoryStore?: MemoryStore
 }
 
 const MODE_TOOLS: Record<AgentMode, ToolName[]> = {
@@ -59,7 +65,12 @@ export class AgentRuntime {
   private llm: LLMClient
   private stack = new TaskStack()
   private conversation: ConversationBuffer
-  private files: FileWorkingSet
+  private files: WorkspaceMemory
+  private store: MemoryStore
+  private history: FrameHistory
+  private agentId: string = randomUUID()
+  private ownsStore: boolean
+  private workingContext = ""
   private closedFrames: ClosedFrame[] = []
 
   private mode: AgentMode = "push"
@@ -67,6 +78,7 @@ export class AgentRuntime {
   private observation = ""
   private running = false
   private activeTool?: string
+  private activeCallRef?: string
   private activeToolSince?: number
   private toolStream = ""
   private pendingToolOk = true
@@ -74,6 +86,8 @@ export class AgentRuntime {
   private protocolErrors = 0
   private streaming?: StreamingState
   private abortController?: AbortController
+  private interrupted = false
+  private activeChild?: AgentRuntime
 
   private readonly maxProtocolErrors: number
   private readonly maxStepsPerRun: number
@@ -88,7 +102,14 @@ export class AgentRuntime {
     this.llm = opts.llm
     this.bus = opts.bus ?? new EventBus()
     this.conversation = new ConversationBuffer(opts.conversationBudgetTokens ?? 32_000)
-    this.files = new FileWorkingSet({ cwd: opts.cwd, budgetTokens: opts.fileBudgetTokens ?? 24_000 })
+    this.ownsStore = !opts.memoryStore
+    this.store = opts.memoryStore ?? new MemoryStore(opts.memoryDirectory ?? join(
+      process.env.STACKY_HISTORY ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "stacky", "history"),
+      randomUUID(),
+    ))
+    this.history = new FrameHistory(this.store, this.agentId)
+    this.files = new WorkspaceMemory({ cwd: opts.cwd, store: this.store, budgetTokens: opts.fileBudgetTokens ?? 24_000,
+      resolveDocument: (ref, find) => this.history.resolve(ref, find) })
     this.maxProtocolErrors = opts.maxProtocolErrors ?? 3
     this.maxStepsPerRun = opts.maxStepsPerRun ?? 80
     this.maxStackDepth = opts.maxStackDepth ?? 16
@@ -123,7 +144,12 @@ export class AgentRuntime {
     text: string,
     meta?: Parameters<ConversationBuffer["add"]>[2],
   ): void {
-    const entry = this.conversation.add(role, text, meta)
+    const frameId = this.stack.top?.id
+    const at = Date.now()
+    // Archive before FIFO eviction; child transcripts and private reasoning are not duplicated here.
+    const eventRef = role === "thinking" || role === "subagent" ? undefined
+      : this.history.event("conversation", { role, text, at, ...meta }, frameId)
+    const entry = this.conversation.add(role, text, { ...meta, frameId, eventRef }, at)
     this.bus.emit({ type: "conversation.added", entry })
   }
 
@@ -132,9 +158,19 @@ export class AgentRuntime {
    * Returns true if a call was actually in flight.
    */
   interrupt(): boolean {
-    if (!this.abortController) return false
-    this.abortController.abort()
+    if (!this.running) return false
+    this.interrupted = true
+    this.abortController?.abort()
+    this.activeChild?.interrupt()
     return true
+  }
+
+  async stop(): Promise<void> {
+    this.interrupt()
+    if (!this.running) return
+    await new Promise<void>((resolve) => {
+      const off = this.bus.on(() => { if (!this.running) { off(); resolve() } })
+    })
   }
 
   /** Swap the model. Only allowed while idle, so a turn is never interrupted. */
@@ -154,6 +190,10 @@ export class AgentRuntime {
     if (budgets.conversationBudgetTokens !== undefined) {
       this.conversation.setBudget(budgets.conversationBudgetTokens)
     }
+    if (evicted.length) {
+      const ref = this.history.event("memory.evicted", { evicted, cause: "budget change" }, this.stack.top?.id)
+      this.observation = `Working-context budget changed. Evicted: ${evicted.join("; ").slice(0, 1500)}\nDetails: read({ref:"${ref}"})`
+    }
     this.emitState()
     return evicted
   }
@@ -161,6 +201,7 @@ export class AgentRuntime {
   /** Clear task state, history and the working set. Keeps the model and metrics. */
   reset(): void {
     if (this.running) throw new Error("Cannot reset while the agent is running.")
+    this.history.event("session.reset", { activeFrames: this.stack.list().map((frame) => frame.id) })
     this.stack.clear()
     this.conversation.clear()
     this.files.clear()
@@ -170,8 +211,21 @@ export class AgentRuntime {
     this.streaming = undefined
     this.protocolErrors = 0
     this.mode = "push"
+    this.workingContext = ""
     this.emitState()
   }
+
+  /** Last rendered context, without refreshing/authorizing code behind an in-flight model call. */
+  inspectContext(): string { return this.workingContext || "(working context empty; read a resource to load a view)" }
+
+  inspectHistory(ref = this.history.rootRef): string {
+    const document = this.history.resolve(ref)
+    if (document) return document.text
+    const value = this.store.get(ref)
+    return value.kind === "text" ? `Artifact ${ref}; use read({ref:"${ref}"}) in the agent to inspect it.` : JSON.stringify(value, null, 2)
+  }
+
+  dispose(): void { if (this.ownsStore) this.store.close() }
 
   snapshot(): AgentState {
     return {
@@ -189,6 +243,7 @@ export class AgentRuntime {
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
       files: this.files.list(),
+      memory: { historyRef: this.history.rootRef, directory: this.store.directory, usedTokens: this.files.totalTokens(), budgetTokens: this.files.budgetTokens, views: this.files.exportViews().length },
       userRequest: this.userRequest,
       metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
       ...(this.streaming ? { streaming: { ...this.streaming } } : {}),
@@ -202,7 +257,8 @@ export class AgentRuntime {
       conversation: [...this.conversation.entries()],
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
-      filePaths: this.files.stableOrder().map((entry) => entry.path),
+      filePaths: this.files.list().map((entry) => entry.path),
+      memory: { directory: this.store.directory, cwd: resolve(this.cwd), agentId: this.agentId, views: this.files.exportViews() },
       ...(this.userRequest ? { userRequest: this.userRequest } : {}),
       metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
     }
@@ -226,10 +282,32 @@ export class AgentRuntime {
    * on the next inference, so a restart cannot resurrect stale code.
    */
   importSession(data: SessionSnapshot): void {
+    if (this.running) throw new Error("Cannot restore a running agent.")
+    if (data.memory) {
+      if (data.memory.cwd !== resolve(this.cwd)) throw new Error(`Session belongs to ${data.memory.cwd}; resume with that --cwd. References must not silently target another workspace.`)
+      if (!existsSync(join(data.memory.directory, "memory.sqlite"))) throw new Error(`History archive is missing: ${data.memory.directory}. Restore it alongside the session; references cannot be fabricated.`)
+      const store = new MemoryStore(data.memory.directory)
+      if (this.ownsStore) this.store.close()
+      this.store = store
+      this.ownsStore = true
+      this.agentId = data.memory.agentId
+      this.history = new FrameHistory(store, this.agentId)
+      this.files = new WorkspaceMemory({ cwd: this.cwd, store, budgetTokens: this.files.budgetTokens,
+        resolveDocument: (ref, find) => this.history.resolve(ref, find) })
+    }
     this.conversation.restore(data.conversation ?? [])
     this.stack.restore(data.stack ?? [])
     this.closedFrames = [...(data.closedFrames ?? [])]
-    this.files.restore(data.filePaths ?? [])
+    if (data.memory) this.files.restoreViews(data.memory.views)
+    else {
+      // Legacy sessions can only import the history they actually retained.
+      this.files.restorePaths(data.filePaths ?? [])
+      for (const frame of data.closedFrames ?? []) { this.history.open(frame.intent, frame.intent.parentId); this.history.close(frame) }
+      for (const frame of data.stack ?? []) this.history.open(frame, frame.parentId)
+      for (const entry of data.conversation ?? []) if (entry.role !== "thinking" && entry.role !== "subagent") this.history.event("legacy.conversation", entry, entry.frameId)
+      this.history.event("legacy.import", { note: "Older evicted turns were not archived and cannot be recovered." })
+    }
+    this.workingContext = ""
     this.observation = ""
     this.streaming = undefined
     this.userRequest = data.userRequest
@@ -274,10 +352,12 @@ export class AgentRuntime {
   async run(): Promise<void> {
     if (this.running) return
     this.running = true
+    this.interrupted = false
     this.emitState()
     try {
       let steps = 0
       while (steps < this.maxStepsPerRun) {
+        if (this.interrupted) return
         if (this.mode === "waiting_for_user") break
         steps += 1
 
@@ -289,8 +369,14 @@ export class AgentRuntime {
         if (!shouldContinue) return
       }
       this.fail(`Step limit reached (${this.maxStepsPerRun}) without reaching a user boundary.`)
+    } catch (error) {
+      // A failed durable write must stop execution, not silently lose the archive.
+      const message = `Runtime stopped: ${error instanceof Error ? error.message : String(error)}`
+      this.conversation.add("protocol", message)
+      this.bus.emit({ type: "fatal", message })
     } finally {
       this.running = false
+      this.activeTool = undefined
       this.emitState()
     }
   }
@@ -303,6 +389,12 @@ export class AgentRuntime {
     { kind: "action"; action: ModelAction } | { kind: "continue" } | { kind: "stop" }
   > {
     const allowedTools = this.allowedTools()
+    this.workingContext = this.files.materialize()
+    const notices = this.files.takeNotices()
+    if (notices.length) {
+      const ref = this.history.event("memory.notices", { notices }, this.stack.top?.id)
+      this.observation = `${this.observation.slice(0, 1200)}\nWorking-context notices: ${notices.join("; ").slice(0, 1000)}\nDetails: read({ref:"${ref}"})`
+    }
     const input: ModelInput = {
       system: buildSystemPrompt(allowedTools),
       prompt: buildUserPrompt({
@@ -310,7 +402,9 @@ export class AgentRuntime {
         depth: this.depth,
         conversation: this.conversation.entries(),
         stack: this.stack.list(),
-        files: this.files.materialize(),
+        files: [],
+        workingContext: this.workingContext,
+        historyContext: this.history.context(this.stack.list()),
         fileBudgetTokens: this.files.budgetTokens,
         fileUsedTokens: this.files.totalTokens(),
         observation: this.observation,
@@ -437,11 +531,13 @@ export class AgentRuntime {
     this.protocolErrors = 0
     this.metrics.toolCalls += 1
 
+    const callRef = this.history.event("tool.call", action, this.stack.top?.id)
+    this.activeCallRef = callRef
     this.activeTool = action.tool
     this.activeToolSince = Date.now()
     // Show the action the moment it starts, before it runs (instant feedback).
     if (action.tool !== "user") {
-      this.addEntry("action", describeToolCall(action.tool, action.input), { tool: action.tool })
+      this.addEntry("action", describeToolCall(action.tool, action.input), { tool: action.tool, eventRef: callRef })
     }
     this.emitState()
     try {
@@ -449,9 +545,9 @@ export class AgentRuntime {
         case "bash":
           return await this.handleBash(action.input.command, action.input.timeoutMs)
         case "read":
-          return this.handleRead(action.input.path)
+          return this.handleRead(action.input)
         case "edit":
-          return this.handleEdit(action.input.path, action.input.edits)
+          return this.handleEdit(action.input)
         case "push":
           return this.handlePush(action.input)
         case "spawn":
@@ -469,6 +565,7 @@ export class AgentRuntime {
       }
       this.pendingToolOk = true
       this.activeTool = undefined
+      this.activeCallRef = undefined
       this.activeToolSince = undefined
       this.toolStream = ""
       this.emitState()
@@ -480,6 +577,8 @@ export class AgentRuntime {
     if (!MODE_TOOLS[this.mode].includes(action.tool)) {
       return `Tool "${action.tool}" is not available in ${this.mode} mode.`
     }
+    const parsed = ACTION_SCHEMAS[action.tool].safeParse(action.input)
+    if (!parsed.success) return `Invalid ${action.tool} arguments: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
     if (action.tool === "pop" && this.stack.isEmpty) {
       return "Cannot pop: the task stack is empty."
     }
@@ -502,85 +601,66 @@ export class AgentRuntime {
   private async handleBash(command: string, timeoutMs?: number): Promise<boolean> {
     this.bus.emit({ type: "tool.started", tool: "bash" })
     this.toolStream = ""
+    this.abortController = new AbortController()
     const result = await runBash(command, {
       cwd: this.cwd,
+      signal: this.abortController.signal,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       onOutput: (chunk) => {
-        this.toolStream += chunk
+        this.toolStream = (this.toolStream + chunk).slice(-4000)
         this.emitState()
       },
     })
+    this.abortController = undefined
     this.toolStream = ""
     this.bus.emit({ type: "tool.finished", tool: "bash", ok: result.ok })
 
     const value = result.value
-    const output = (value?.output ?? "").replace(/\s+$/, "")
-    const observation = result.ok
-      ? output || "(no output)"
-      : `command failed${value ? ` (exit ${value.exitCode})` : ""}: ${result.error ?? "unknown error"}${output ? `\n${output}` : ""}`
-
-    this.observe(observation, result.ok)
+    const output = value?.output ?? ""
+    const artifact = this.files.capture(output || "(no output)", { title: `bash · ${command.split("\n")[0]?.slice(0, 100)}`, frameId: this.stack.top?.id,
+      exitCode: value?.exitCode, upstreamTruncated: value?.truncated ?? false })
+    this.history.event("bash.result", { command, ok: result.ok, exitCode: value?.exitCode, error: result.error,
+      outputRef: artifact.ref, captureTruncated: value?.truncated ?? false }, this.stack.top?.id)
+    const status = result.ok ? "command finished" : "command failed"
+    this.observe(`${status}${value ? ` (exit ${value.exitCode})` : ""}${result.error ? `: ${result.error}` : ""}\n${artifact.message}${value?.truncated ? "\nCAPTURE LIMITED: omitted output is unavailable, not another page." : ""}${this.evictionNotice(artifact)}`, result.ok)
     return true
   }
 
-  private handleRead(path: string): boolean {
+  private handleRead(input: ReadAction): boolean {
     this.bus.emit({ type: "tool.started", tool: "read" })
-    const result = runRead(path, { cwd: this.cwd })
-    this.bus.emit({ type: "tool.finished", tool: "read", ok: result.ok })
+    const result = this.files.read(input)
+    return this.finishMemoryTool("read", result)
+  }
 
-    if (!result.ok || !result.value) {
-      this.observe(`read ${path} FAILED: ${result.error ?? "unknown error"}`, false)
-      return true
+  private handleEdit(input: EditAction): boolean {
+    this.bus.emit({ type: "tool.started", tool: "edit" })
+    const result = input.path !== undefined
+      ? this.files.edit({ path: input.path, edits: input.edits.filter((edit) => "oldText" in edit) })
+      : this.files.edit({ edits: input.edits.filter((edit) => "text" in edit) })
+    return this.finishMemoryTool("edit", result)
+  }
+
+  private finishMemoryTool(tool: "read" | "edit", result: MemoryResult): boolean {
+    this.bus.emit({ type: "tool.finished", tool, ok: result.ok })
+    this.history.event(`${tool}.result`, result, this.stack.top?.id)
+    if (result.ok && result.ref) {
+      const descriptor = this.store.get(result.ref)
+      if (descriptor.kind === "file" && typeof descriptor.path === "string") {
+        const entry = this.files.list().find((file) => file.path === descriptor.path)
+        if (entry) {
+          this.metrics.filesPromoted++
+          this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
+        }
+      }
     }
-
-    const { evicted, entry } = this.files.promote(path)
-    this.metrics.filesPromoted += 1
-    this.metrics.filesEvicted += evicted.length
-    this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
-    for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
-
-    const lines = result.value.content.split("\n").length
-    const note = result.value.truncated ? " · truncated" : ""
-    this.observe(
-      `${path} · ${lines} lines · ~${entry.tokenCount} tokens${note} · now in the working set`,
-    )
+    this.observe(`${tool}${result.ok ? "" : " FAILED"}: ${result.message}${this.evictionNotice(result)}`, result.ok)
     return true
   }
 
-  private handleEdit(path: string, edits: { oldText: string; newText: string; replaceAll?: boolean }[]): boolean {
-    // Read-before-edit: only edit existing files that are in the working set, so
-    // the model never patches contents it has not actually seen. Creating a new
-    // file is still allowed (there is nothing to read).
-    const exists = existsSync(resolvePath(this.cwd, path))
-    if (exists && !this.files.has(path)) {
-      this.bus.emit({ type: "tool.started", tool: "edit" })
-      this.bus.emit({ type: "tool.finished", tool: "edit", ok: false })
-      this.observe(
-      `refused: ${path} is not in your working set. Call read("${path}") first, then retry the edit against the current contents.`,
-      )
-      return true
-    }
-
-    this.bus.emit({ type: "tool.started", tool: "edit" })
-    const result = runEdit(path, edits, { cwd: this.cwd })
-    this.bus.emit({ type: "tool.finished", tool: "edit", ok: result.ok })
-
-    if (!result.ok || !result.value) {
-      this.observe(`edit ${path} FAILED: ${result.error ?? "unknown error"}`, false)
-      return true
-    }
-
-    const { evicted, entry } = this.files.promote(path)
-    this.metrics.filesPromoted += 1
-    this.metrics.filesEvicted += evicted.length
-    this.bus.emit({ type: "file.promoted", path: entry.path, tokens: entry.tokenCount })
-    for (const path of evicted) this.bus.emit({ type: "file.evicted", path })
-
-    const verb = result.value.created ? "created" : "updated"
-    this.observe(
-      `${verb} ${path} · ${result.value.replacements} replacement${result.value.replacements === 1 ? "" : "s"} · ~${entry.tokenCount} tokens · now in the working set`,
-    )
-    return true
+  private evictionNotice(result: MemoryResult): string {
+    this.metrics.filesEvicted += result.evicted.length
+    for (const path of result.evicted) this.bus.emit({ type: "file.evicted", path })
+    return result.evicted.length ? `\nEvicted from working context (still archived): ${result.evicted.join("; ")}` : ""
   }
 
   private async handleSpawn(action: PushAction): Promise<boolean> {
@@ -592,6 +672,7 @@ export class AgentRuntime {
       depth: this.depth + 1,
       maxDepth: this.maxDepth,
       allowUser: false,
+      memoryStore: this.store,
       maxStepsPerRun: this.maxStepsPerRun,
       maxStackDepth: this.maxStackDepth,
       maxProtocolErrors: this.maxProtocolErrors,
@@ -602,6 +683,9 @@ export class AgentRuntime {
     // A subagent starts on the frame it was spawned for — the frame IS the
     // delegation boundary. It gets its own stack, file working set and history.
     const frame = child.stack.push(action)
+    const parentRef = this.stack.top ? this.history.ref(this.stack.top.id) : this.history.rootRef
+    frame.historyRef = child.history.open(frame, undefined, { spawnedFrom: parentRef })
+    this.history.event("subagent.spawn", { childFrameRef: frame.historyRef, parentRef }, this.stack.top?.id)
     child.mode = "execute"
     this.bus.emit({ type: "subagent.started", depth: child.depth, frame })
     this.bus.emit({ type: "tool.started", tool: "spawn" })
@@ -620,30 +704,39 @@ export class AgentRuntime {
 
     let report: string
     let ok = true
+    this.activeChild = child
     try {
       await child.run()
       report = child.lastReport ?? "(subagent finished without a report)"
+      ok = child.lastReport !== undefined && child.stack.isEmpty
     } catch (error) {
       ok = false
       report = `subagent failed: ${error instanceof Error ? error.message : String(error)}`
     } finally {
+      this.activeChild = undefined
       stopForwarding()
     }
 
     this.metrics.subagents += 1
     this.bus.emit({ type: "tool.finished", tool: "spawn", ok })
     this.bus.emit({ type: "subagent.finished", depth: child.depth, report })
-    this.observe(`subagent report:\n${report}`)
+    const artifact = this.files.capture(report, { title: `Subagent report · ${frame.title}`, childFrameRef: frame.historyRef })
+    this.history.event("subagent.return", { childFrameRef: frame.historyRef, reportRef: artifact.ref, ok }, this.stack.top?.id)
+    this.observe(`subagent report${child.stack.isEmpty ? "" : ` (${child.stack.depth} unresolved frame(s); not completed)`}: ${artifact.message}\nInspect child frame: read({ref:"${frame.historyRef}"})${this.evictionNotice(artifact)}`, ok)
     return true
   }
 
   private handlePush(action: PushAction): boolean {
+    const parent = this.stack.top
+    const resume = parent ? parent.todos.find((todo) => todo.status === "pending")?.text ?? parent.title : undefined
+    if (parent) this.history.event("frame.suspend", { next: resume, childIntent: action.title ?? action.why, lastEvent: this.observation }, parent.id)
     const frame = this.stack.push(action)
+    frame.historyRef = this.history.open(frame, parent?.id, { resume })
     this.mode = "execute"
     this.metrics.pushes += 1
     this.metrics.maxStackDepth = Math.max(this.metrics.maxStackDepth, this.stack.depth)
     this.bus.emit({ type: "frame.pushed", frame })
-    this.observe(`top of stack · depth ${this.stack.depth}`)
+    this.observe(`top of stack · depth ${this.stack.depth} · frame ${frame.historyRef}`)
     return true
   }
 
@@ -664,6 +757,7 @@ export class AgentRuntime {
       return true
     }
     this.stack.markTodo(action.index, action.status, action.note)
+    this.history.update(frame)
     this.observe(`todo #${action.index} ${action.status} · ${todo.text}`)
     return true
   }
@@ -691,13 +785,16 @@ export class AgentRuntime {
       this.observe(`pop FAILED: ${error instanceof Error ? error.message : String(error)}`, false)
       return true
     }
+    const closeRef = this.history.close(closed)
     this.closedFrames.push(closed)
     this.metrics.pops += 1
     this.metrics.outcomes[closed.disposition.outcome] += 1
     this.bus.emit({ type: "frame.popped", frame: closed })
-    this.observe(
-      `closed · ${closed.disposition.outcome} · depth ${this.stack.depth}`,
-    )
+    const parent = this.stack.top
+    const next = parent?.todos.find((todo) => todo.status === "pending")
+    const resume = parent ? `\nResuming ${parent.title} (${this.history.ref(parent.id)})${next ? ` · next unresolved: ${next.text}` : ""}\nChild effects: ${closed.disposition.effectsOnParent || "(none recorded)"}` : ""
+    if (parent) this.history.event("frame.resume", { childFrameRef: closed.intent.historyRef, closeRef, next: next?.text, effects: closed.disposition.effectsOnParent }, parent.id)
+    this.observe(`closed · ${closed.disposition.outcome} · depth ${this.stack.depth} · evidence read({ref:"${closeRef}"})${resume}`)
     return true
   }
 
@@ -736,8 +833,10 @@ export class AgentRuntime {
   /** Record a tool observation (the action entry was already added at tool start). */
   private observe(observation: string, ok = true): void {
     this.pendingToolOk = ok
-    this.addEntry("observation", observation)
-    this.observation = observation
+    const resultRef = this.history.event("tool.result", { tool: this.activeTool, callRef: this.activeCallRef, ok, observation }, this.stack.top?.id)
+    const receipt = observation.length > 2400 ? `${observation.slice(0, 2200)}\n[More: read({ref:"${resultRef}"})]` : observation
+    this.addEntry("observation", receipt, { eventRef: resultRef })
+    this.observation = receipt
     this.emitState()
   }
 

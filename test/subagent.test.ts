@@ -42,7 +42,9 @@ describe("subagents", () => {
     const observation = state.conversation.find(
       (entry) => entry.role === "observation" && entry.text.includes("subagent report"),
     )
-    expect(observation?.text).toContain("child report: a.txt says hello")
+    expect(observation?.text).toContain("Inspect child frame")
+    expect(runtime.inspectContext()).toContain("child report: a.txt says hello")
+    expect(observation?.text).not.toContain("a.txt says hello") // receipt, not a duplicate body
   })
 
   test("subagents cannot ask the user", async () => {

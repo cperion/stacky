@@ -4,74 +4,70 @@ export type BashValue = {
   command: string
   output: string
   exitCode: number
+  /** Capture quota, NOT display pagination. Omitted bytes cannot be recovered. */
   truncated: boolean
+  omittedBytes?: number
 }
 
 export type BashOptions = {
   cwd: string
   timeoutMs?: number
-  /** Called as output arrives, so the UI can show a command while it runs. */
   onOutput?: (chunk: string) => void
+  signal?: AbortSignal
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
-const MAX_OUTPUT_CHARS = 24_000
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024
 
-function truncate(text: string, limit = MAX_OUTPUT_CHARS): { text: string; truncated: boolean } {
-  if (text.length <= limit) return { text, truncated: false }
-  const head = Math.floor(limit * 0.6)
-  const tail = limit - head
-  return {
-    text: `${text.slice(0, head)}\n… [${text.length - limit} chars truncated] …\n${text.slice(-tail)}`,
-    truncated: true,
-  }
-}
-
-/** General operating-system access. Output streams as it is produced. */
+/** Execute once; capture before paging. Keep stdout/stderr distinct while decoding. */
 export async function runBash(command: string, opts: BashOptions): Promise<ToolResult<BashValue>> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let proc: ReturnType<typeof Bun.spawn> | undefined
+  let aborted = false
+  const abort = () => { aborted = true; proc?.kill() }
   try {
-    const proc = Bun.spawn(["bash", "-lc", command], {
-      cwd: opts.cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env },
-    })
-
+    proc = Bun.spawn(["bash", "-lc", command], { cwd: opts.cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env } })
+    opts.signal?.addEventListener("abort", abort, { once: true })
+    if (opts.signal?.aborted) abort()
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
     let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      proc.kill()
-    }, timeoutMs)
-
-    let stdout = ""
-    let stderr = ""
-    const decoder = new TextDecoder()
-
-    const pump = async (stream: ReadableStream<Uint8Array>, sink: "out" | "err"): Promise<void> => {
+    timer = setTimeout(() => { timedOut = true; proc?.kill() }, timeoutMs)
+    let remaining = MAX_CAPTURE_BYTES
+    let omittedBytes = 0
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    const pump = async (stream: ReadableStream<Uint8Array>, target: Buffer[]): Promise<void> => {
       const reader = stream.getReader()
+      const decoder = new TextDecoder()
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
-        const text = decoder.decode(value, { stream: true })
-        if (sink === "out") stdout += text
-        else stderr += text
-        opts.onOutput?.(text)
+        const kept = Math.min(remaining, value.byteLength)
+        if (kept) target.push(Buffer.from(value.subarray(0, kept)))
+        remaining -= kept
+        omittedBytes += value.byteLength - kept
+        opts.onOutput?.(decoder.decode(value, { stream: true }))
       }
+      const tail = decoder.decode()
+      if (tail) opts.onOutput?.(tail)
     }
-
-    await Promise.all([pump(proc.stdout as ReadableStream<Uint8Array>, "out"), pump(proc.stderr as ReadableStream<Uint8Array>, "err")])
+    await Promise.all([
+      pump(proc.stdout as ReadableStream<Uint8Array>, stdout),
+      pump(proc.stderr as ReadableStream<Uint8Array>, stderr),
+    ])
     const exitCode = await proc.exited
-    clearTimeout(timer)
-
-    const combined = stderr.length > 0 ? `${stdout}${stdout && !stdout.endsWith("\n") ? "\n" : ""}[stderr]\n${stderr}` : stdout
-    const { text, truncated } = truncate(combined)
-
-    if (timedOut) {
-      return { ok: false, error: `Command timed out after ${timeoutMs}ms`, value: { command, output: text, exitCode, truncated } }
-    }
-    return { ok: exitCode === 0, value: { command, output: text, exitCode, truncated } }
+    const out = Buffer.concat(stdout).toString("utf8")
+    const err = Buffer.concat(stderr).toString("utf8")
+    const output = out + (err ? `${out && !out.endsWith("\n") ? "\n" : ""}[stderr]\n${err}` : "")
+    const value: BashValue = { command, output, exitCode, truncated: omittedBytes > 0, omittedBytes }
+    return aborted ? { ok: false, error: "Command interrupted", value }
+      : timedOut ? { ok: false, error: `Command timed out after ${timeoutMs}ms`, value }
+      : { ok: exitCode === 0, value }
   } catch (error) {
+    proc?.kill()
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (timer) clearTimeout(timer)
+    opts.signal?.removeEventListener("abort", abort)
   }
 }

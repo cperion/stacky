@@ -75,8 +75,10 @@ describe("session persistence", () => {
 
       const restored = runtimeWith([])
       loadSession(restored, sessionPath)
-      const internal = restored as unknown as { files: { materialize: () => { content: string }[] } }
-      expect(internal.files.materialize()[0]?.content).toBe("updated after save")
+      const internal = restored as unknown as { files: { materialize: () => string } }
+      const context = internal.files.materialize()
+      expect(context).toContain("updated after save")
+      expect(context).not.toContain("] hello")
     })
   })
 })

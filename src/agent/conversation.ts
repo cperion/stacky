@@ -38,7 +38,7 @@ export class ConversationBuffer {
   add(
     role: ConversationRole,
     text: string,
-    meta?: { tool?: string; depth?: number; subrole?: ConversationRole },
+    meta?: { tool?: string; depth?: number; subrole?: ConversationRole; frameId?: string; eventRef?: string },
     now = Date.now(),
   ): ConversationEntry {
     const entry: ConversationEntry = {
@@ -50,6 +50,8 @@ export class ConversationBuffer {
       ...(meta?.tool ? { tool: meta.tool } : {}),
       ...(meta?.depth !== undefined ? { depth: meta.depth } : {}),
       ...(meta?.subrole ? { subrole: meta.subrole } : {}),
+      ...(meta?.frameId ? { frameId: meta.frameId } : {}),
+      ...(meta?.eventRef ? { eventRef: meta.eventRef } : {}),
     }
     this.items.push(entry)
     this.evict()
@@ -70,12 +72,20 @@ export class ConversationBuffer {
 
   restore(items: ConversationEntry[]): void {
     this.items = [...items]
+    this.evict()
   }
 
   /** Drop oldest entries until the buffer fits, always keeping the newest entry. */
   private evict(): void {
     while (this.tokens() > this.budgetTokens && this.items.length > 1) {
       this.items.shift()
+    }
+    const last = this.items[0]
+    if (last && last.tokens > this.budgetTokens) {
+      const limit = Math.max(0, Math.floor(this.budgetTokens) * 4)
+      const suffix = last.eventRef ? `\n[abridged; read({ref:"${last.eventRef}"})]` : "\n[abridged]"
+      last.text = (last.text.slice(0, Math.max(0, limit - suffix.length)) + suffix).slice(0, limit)
+      last.tokens = estimateTokens(last.text)
     }
   }
 }

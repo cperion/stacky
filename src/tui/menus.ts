@@ -76,7 +76,7 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
     { kind: "separator", label: "Context" },
     {
       kind: "choice",
-      label: "File budget",
+      label: "Working-view budget",
       value: () => String(cfg.fileBudgetTokens),
       options: () => FILE_BUDGETS,
       set: (v) => {
@@ -98,7 +98,7 @@ export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
     {
       kind: "action",
       label: "Reset session",
-      hint: "clear stack, chat, files",
+      hint: "clear active state; retain archive",
       run: () => ctx.resetSession(),
     },
     { kind: "action", label: "Quit", run: () => ctx.quit() },

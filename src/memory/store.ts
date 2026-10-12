@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { Database } from "bun:sqlite"
 
 const MIN_ALIAS_LENGTH = 3
@@ -42,6 +42,7 @@ export class MemoryStore {
   private closed = false
 
   constructor(directory: string) {
+    directory = resolve(directory)
     this.directory = directory
     this.blobDirectory = join(directory, "blobs")
     mkdirSync(this.blobDirectory, { recursive: true, mode: 0o700 })
@@ -96,6 +97,12 @@ export class MemoryStore {
     const canonical = canonicalStringify(value)
     const hash = sha256(canonical)
     return this.db.transaction(() => this.putCanonical(canonical, hash))()
+  }
+
+  /** Batch reference allocation for one rendered view without an fsync per line. */
+  batch<T>(operation: () => T): T {
+    this.assertOpen()
+    return this.db.transaction(operation)()
   }
 
   /** Resolve an exact alias. Prefix resolution is deliberately unsupported. */
@@ -309,7 +316,7 @@ function canonicalStringify(value: unknown): string {
       if (active.has(item)) throw new Error("Memory descriptors cannot contain cycles")
       active.add(item)
       const record = item as Record<string, unknown>
-      const result: Record<string, unknown> = {}
+      const result: Record<string, unknown> = Object.create(null)
       for (const key of Object.keys(record).sort()) {
         const entry = record[key]
         if (entry === undefined) continue
