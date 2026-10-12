@@ -12,7 +12,7 @@ import type {
   StreamingState,
   UserRequestRecord,
 } from "./types.ts"
-import { TaskStack } from "../stack/stack.ts"
+import { reserveFrameSequences, TaskStack } from "../stack/stack.ts"
 import { ACTION_SCHEMAS } from "../stack/schemas.ts"
 import { ConversationBuffer } from "./conversation.ts"
 import { MemoryStore } from "../memory/store.ts"
@@ -154,8 +154,8 @@ export class AgentRuntime {
   }
 
   /**
-   * Interrupt the in-flight model call at the API level (aborts its stream).
-   * Returns true if a call was actually in flight.
+   * Request a stop at the next tool boundary and abort the active model/command.
+   * Child runtimes receive the same interruption request.
    */
   interrupt(): boolean {
     if (!this.running) return false
@@ -198,10 +198,14 @@ export class AgentRuntime {
     return evicted
   }
 
-  /** Clear task state, history and the working set. Keeps the model and metrics. */
+  /** Clear active state and transcript; retain the archive, model and metrics. */
   reset(): void {
     if (this.running) throw new Error("Cannot reset while the agent is running.")
-    this.history.event("session.reset", { activeFrames: this.stack.list().map((frame) => frame.id) })
+    const resetRef = this.history.event("session.reset", { activeFrames: this.stack.list().map((frame) => frame.id) })
+    for (const frame of [...this.stack.list()].reverse()) {
+      this.history.close({ intent: { ...frame, todos: frame.todos.map((todo) => todo.status === "pending" ? { ...todo, status: "abandoned", note: "Explicit user reset" } : todo) },
+        disposition: { outcome: "abandoned", whatWasDone: "Active responsibility cancelled by the user; no completion is asserted.", whyClosed: "Explicit user reset", evidence: `Reset event ${resetRef}`, effectsOnParent: "Active state was cleared by the user.", closedAt: Date.now() } })
+    }
     this.stack.clear()
     this.conversation.clear()
     this.files.clear()
@@ -243,25 +247,25 @@ export class AgentRuntime {
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
       files: this.files.list(),
-      memory: { historyRef: this.history.rootRef, directory: this.store.directory, usedTokens: this.files.totalTokens(), budgetTokens: this.files.budgetTokens, views: this.files.exportViews().length },
+      memory: { historyRef: this.history.rootRef, directory: this.store.directory, ...this.files.summary() },
       userRequest: this.userRequest,
       metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
       ...(this.streaming ? { streaming: { ...this.streaming } } : {}),
     }
   }
 
-  /** Serializable state. Contains file paths only, never contents. */
+  /** Checkpoint view selections; historical bodies are held in the separate archive. */
   exportSession(): SessionSnapshot {
-    return {
+    return structuredClone({
       mode: this.mode,
-      conversation: [...this.conversation.entries()],
+      conversation: this.conversation.entries().filter((entry) => entry.role !== "thinking" && entry.role !== "subagent"),
       stack: [...this.stack.list()],
       closedFrames: [...this.closedFrames],
       filePaths: this.files.list().map((entry) => entry.path),
       memory: { directory: this.store.directory, cwd: resolve(this.cwd), agentId: this.agentId, views: this.files.exportViews() },
       ...(this.userRequest ? { userRequest: this.userRequest } : {}),
       metrics: { ...this.metrics, outcomes: { ...this.metrics.outcomes } },
-    }
+    })
   }
 
   /** Surface an out-of-band error to the conversation without changing mode. */
@@ -283,6 +287,7 @@ export class AgentRuntime {
    */
   importSession(data: SessionSnapshot): void {
     if (this.running) throw new Error("Cannot restore a running agent.")
+    data = structuredClone(data)
     if (data.memory) {
       if (data.memory.cwd !== resolve(this.cwd)) throw new Error(`Session belongs to ${data.memory.cwd}; resume with that --cwd. References must not silently target another workspace.`)
       if (!existsSync(join(data.memory.directory, "memory.sqlite"))) throw new Error(`History archive is missing: ${data.memory.directory}. Restore it alongside the session; references cannot be fabricated.`)
@@ -297,13 +302,17 @@ export class AgentRuntime {
     }
     this.conversation.restore(data.conversation ?? [])
     this.stack.restore(data.stack ?? [])
-    this.closedFrames = [...(data.closedFrames ?? [])]
+    this.closedFrames = (data.closedFrames ?? []).slice(-64)
+    reserveFrameSequences(this.closedFrames.map((closed) => closed.intent))
     if (data.memory) this.files.restoreViews(data.memory.views)
     else {
       // Legacy sessions can only import the history they actually retained.
       this.files.restorePaths(data.filePaths ?? [])
-      for (const frame of data.closedFrames ?? []) { this.history.open(frame.intent, frame.intent.parentId); this.history.close(frame) }
-      for (const frame of data.stack ?? []) this.history.open(frame, frame.parentId)
+      for (const frame of data.closedFrames ?? []) { frame.intent.historyRef = this.history.open(frame.intent, frame.intent.parentId); this.history.close(frame) }
+      for (const [index, frame] of (data.stack ?? []).entries()) {
+        frame.parentId ??= data.stack[index - 1]?.id
+        frame.historyRef = this.history.open(frame, frame.parentId)
+      }
       for (const entry of data.conversation ?? []) if (entry.role !== "thinking" && entry.role !== "subagent") this.history.event("legacy.conversation", entry, entry.frameId)
       this.history.event("legacy.import", { note: "Older evicted turns were not archived and cannot be recovered." })
     }
@@ -362,6 +371,10 @@ export class AgentRuntime {
         steps += 1
 
         const result = await this.invokeModel()
+        if (this.interrupted) {
+          if (result.kind === "action") this.history.event("tool.not_executed", { action: result.action, reason: "Interrupted before dispatch" }, this.stack.top?.id)
+          return
+        }
         if (result.kind === "stop") return
         if (result.kind === "continue") continue
 
@@ -414,6 +427,8 @@ export class AgentRuntime {
       mode: this.mode,
     }
 
+    this.history.event("model.context", { model: this.llm.label, mode: this.mode,
+      frames: this.stack.list().map((frame) => frame.historyRef ?? frame.id), views: this.files.exportViews() }, this.stack.top?.id)
     this.metrics.llmCalls += 1
     this.bus.emit({ type: "model.call.started", mode: this.mode })
 
@@ -515,8 +530,10 @@ export class AgentRuntime {
 
   /** Returns false when the loop must stop (user boundary or terminal state). */
   private async dispatch(action: ModelAction): Promise<boolean> {
+    const callRef = this.history.event("tool.call", action, this.stack.top?.id)
     const violation = this.validateAction(action)
     if (violation) {
+      this.history.event("tool.rejected", { callRef, violation }, this.stack.top?.id)
       this.protocolErrors += 1
       this.metrics.protocolErrors += 1
       this.observation = `PROTOCOL ERROR: ${violation}`
@@ -524,6 +541,7 @@ export class AgentRuntime {
       this.bus.emit({ type: "protocol.error", message: violation })
       if (this.protocolErrors > this.maxProtocolErrors) {
         this.fail(`Repeated invalid actions. Last: ${violation}`)
+        return false
       }
       return true
     }
@@ -531,7 +549,6 @@ export class AgentRuntime {
     this.protocolErrors = 0
     this.metrics.toolCalls += 1
 
-    const callRef = this.history.event("tool.call", action, this.stack.top?.id)
     this.activeCallRef = callRef
     this.activeTool = action.tool
     this.activeToolSince = Date.now()
@@ -617,10 +634,10 @@ export class AgentRuntime {
 
     const value = result.value
     const output = value?.output ?? ""
-    const artifact = this.files.capture(output || "(no output)", { title: `bash · ${command.split("\n")[0]?.slice(0, 100)}`, frameId: this.stack.top?.id,
-      exitCode: value?.exitCode, upstreamTruncated: value?.truncated ?? false })
+    const artifact = this.files.capture(output, { title: `bash call ${this.activeCallRef} · ${command.split("\n")[0]?.slice(0, 100)}`, callRef: this.activeCallRef, frameId: this.stack.top?.id,
+      exitCode: value?.exitCode, upstreamTruncated: value?.truncated ?? false, upstreamOmittedBytes: value?.omittedBytes ?? 0 })
     this.history.event("bash.result", { command, ok: result.ok, exitCode: value?.exitCode, error: result.error,
-      outputRef: artifact.ref, captureTruncated: value?.truncated ?? false }, this.stack.top?.id)
+      outputRef: artifact.ref, captureTruncated: value?.truncated ?? false, omittedBytes: value?.omittedBytes ?? 0 }, this.stack.top?.id)
     const status = result.ok ? "command finished" : "command failed"
     this.observe(`${status}${value ? ` (exit ${value.exitCode})` : ""}${result.error ? `: ${result.error}` : ""}\n${artifact.message}${value?.truncated ? "\nCAPTURE LIMITED: omitted output is unavailable, not another page." : ""}${this.evictionNotice(artifact)}`, result.ok)
     return true
@@ -720,7 +737,7 @@ export class AgentRuntime {
     this.metrics.subagents += 1
     this.bus.emit({ type: "tool.finished", tool: "spawn", ok })
     this.bus.emit({ type: "subagent.finished", depth: child.depth, report })
-    const artifact = this.files.capture(report, { title: `Subagent report · ${frame.title}`, childFrameRef: frame.historyRef })
+    const artifact = this.files.capture(report, { title: `Subagent report · ${frame.title}`, callRef: this.activeCallRef, childFrameRef: frame.historyRef })
     this.history.event("subagent.return", { childFrameRef: frame.historyRef, reportRef: artifact.ref, ok }, this.stack.top?.id)
     this.observe(`subagent report${child.stack.isEmpty ? "" : ` (${child.stack.depth} unresolved frame(s); not completed)`}: ${artifact.message}\nInspect child frame: read({ref:"${frame.historyRef}"})${this.evictionNotice(artifact)}`, ok)
     return true
@@ -787,6 +804,7 @@ export class AgentRuntime {
     }
     const closeRef = this.history.close(closed)
     this.closedFrames.push(closed)
+    if (this.closedFrames.length > 64) this.closedFrames.shift() // full history lives in the archive
     this.metrics.pops += 1
     this.metrics.outcomes[closed.disposition.outcome] += 1
     this.bus.emit({ type: "frame.popped", frame: closed })

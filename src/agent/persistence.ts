@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { randomUUID } from "node:crypto"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { SessionSnapshot } from "./types.ts"
 import type { AgentRuntime } from "./runtime.ts"
@@ -13,11 +14,16 @@ export type SessionData = SessionSnapshot & {
 /** Session checkpoints reference the separate durable archive; no file bodies are embedded here. */
 export function saveSession(runtime: AgentRuntime, path: string): void {
   const data: SessionData = { version: SESSION_VERSION, savedAt: Date.now(), ...runtime.exportSession() }
-  mkdirSync(dirname(path), { recursive: true })
-  const temporary = `${path}.${process.pid}.tmp`
-  writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 })
-  chmodSync(temporary, 0o600)
-  renameSync(temporary, path)
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600, flag: "wx" })
+    chmodSync(temporary, 0o600)
+    renameSync(temporary, path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") try { unlinkSync(temporary) } catch {}
+    throw error
+  }
 }
 
 export function loadSession(runtime: AgentRuntime, path: string): boolean {
@@ -36,14 +42,21 @@ export function loadSession(runtime: AgentRuntime, path: string): boolean {
 /** Autosave after state changes, debounced. */
 export function attachSessionAutosave(runtime: AgentRuntime, path: string, debounceMs = 250): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let lastFailure = ""
   const unsubscribe = runtime.bus.on((event) => {
     if (event.type !== "state.changed") return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       try {
         saveSession(runtime, path)
-      } catch {
-        // Autosave must never break the runtime.
+        lastFailure = ""
+      } catch (error) {
+        const message = `Session checkpoint was not saved: ${error instanceof Error ? error.message : String(error)}`
+        const failureKey = (error as NodeJS.ErrnoException)?.code ?? message
+        if (failureKey !== lastFailure) {
+          lastFailure = failureKey
+          try { runtime.note(message) } catch { runtime.bus.emit({ type: "fatal", message }) }
+        }
       }
     }, debounceMs)
   })

@@ -4,6 +4,10 @@ import type { PopAction, PushAction } from "./schemas.ts"
 
 let frameCounter = 0
 
+export function reserveFrameSequences(frames: readonly TaskFrame[]): void {
+  for (const frame of frames) if (Number.isSafeInteger(frame.seq)) frameCounter = Math.max(frameCounter, frame.seq)
+}
+
 export function createFrame(action: PushAction, now = Date.now()): TaskFrame {
   frameCounter += 1
   const fallbackTitle = action.why.split("\n")[0]?.trim().slice(0, 60) ?? "task"
@@ -88,6 +92,7 @@ export class TaskStack {
   }
 
   restore(frames: TaskFrame[]): void {
+    reserveFrameSequences(frames)
     this.frames = [...frames]
   }
 }

@@ -135,42 +135,42 @@ const positionalTask = positionals[0]
 const initialTask = values.task ?? positionalTask
 
 try {
-if (values.headless) {
-  if (resumeNote) console.log(resumeNote)
-  await runHeadless(runtime, initialTask)
-} else {
-  let firstRun = true
-  let uiMode = config.ui
-  for (;;) {
-    const runOptions = {
-      runtime,
-      settings,
-      ...(firstRun && initialTask ? { initialTask } : {}),
-      ...(firstRun && resumeNote ? { notice: resumeNote } : {}),
-    }
-    let outcome: UiResult
-    try {
-      outcome = uiMode === "repl" ? await runRepl(runOptions) : await runApp(runOptions)
-    } catch (error) {
-      if (uiMode === "repl") {
-        console.error(
-          `Could not start the REPL interface (${error instanceof Error ? error.message : String(error)}).\n` +
-            `Falling back to the panes interface.`,
-        )
-        config.ui = "panes"
-        uiMode = "panes"
+  if (values.headless) {
+    if (resumeNote) console.log(resumeNote)
+    await runHeadless(runtime, initialTask)
+  } else {
+    let firstRun = true
+    let uiMode = config.ui
+    for (;;) {
+      const runOptions = {
+        runtime,
+        settings,
+        ...(firstRun && initialTask ? { initialTask } : {}),
+        ...(firstRun && resumeNote ? { notice: resumeNote } : {}),
+      }
+      let outcome: UiResult
+      try {
+        outcome = uiMode === "repl" ? await runRepl(runOptions) : await runApp(runOptions)
+      } catch (error) {
+        if (uiMode === "repl") {
+          console.error(
+            `Could not start the REPL interface (${error instanceof Error ? error.message : String(error)}).\n` +
+              `Falling back to the panes interface.`,
+          )
+          config.ui = "panes"
+          uiMode = "panes"
+          continue
+        }
+        throw error
+      }
+      firstRun = false
+      if (outcome === "switch") {
+        uiMode = config.ui
         continue
       }
-      throw error
+      break
     }
-    firstRun = false
-    if (outcome === "switch") {
-      uiMode = config.ui
-      continue
-    }
-    break
   }
-}
 } finally {
   await runtime.stop()
   stopAutosave?.()
@@ -257,18 +257,20 @@ Options:
                           Exit 0 only on fresh API responses; failures include diagnostics
   --thinking               Keep the model's reasoning mode on (forces toolChoice auto)
   --cwd <path>             Workspace root (default: current directory)
-  --file-budget <tokens>   File working-set token budget (default: 24000)
+  --file-budget <tokens>   Shared working-view budget (estimated tokens; default: 24000)
   --conversation-budget <tokens>  Conversation token budget (default: 32000)
   --config <path>          Config file (default: ${configPath()})
   --ui <mode>              panes | repl (default: repl)
   --theme <mode>           auto | dark | light (light = black on white)
-  --session <path>         Persist/restore task state (JSON). File contents are never stored.
+  --session <path>         Persist/restore state and archive references (JSON checkpoint)
   --trace <path>           Append a JSONL execution trace
   -h, --help               Show this help
 
 Environment:
   DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY
   STACKY_PROVIDER, STACKY_MODEL, STACKY_CONFIG
+  STACKY_HISTORY          Archive root (default: $XDG_STATE_HOME/stacky/history)
+                          Archives contain historical file/tool content; not encrypted
 
 Keys (TUI):
   Enter       send message / choose highlighted option / activate menu item

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { MemoryStore } from "../src/memory/store.ts"
@@ -340,6 +340,60 @@ describe("WorkspaceMemory", () => {
     expect(edited).toContain("lead-0")
     expect(edited).toContain("TARGET")
     expect(memory.totalTokens()).toBeLessThanOrEqual(10_000)
+    store.close()
+  })
+
+  test("search matches paginate over one snapshot and snippets do not authorize writes", () => {
+    const { cwd, store, memory } = setup(2400)
+    const path = join(cwd, "matches.txt")
+    writeFileSync(path, Array.from({ length: 35 }, (_, index) => `needle-${index}`).join("\n"))
+    expect(memory.read({ path: "matches.txt", find: "needle" }).ok).toBe(true)
+    const first = memory.materialize()
+    expect(first).toContain("Line 20:")
+    expect(first).not.toContain("Line 21:")
+    expect(memory.edit({ path: "matches.txt", edits: [{ oldText: "needle-0", newText: "NO" }] }).ok).toBe(false)
+    const next = first.match(/More matches: read\(\{ref:"([0-9a-f]+)"\}\)/)?.[1] as string
+    expect(next).toBeDefined()
+    writeFileSync(path, `${readFileSync(path, "utf8")}\nneedle-NEW`)
+    memory.clear()
+    expect(memory.read({ ref: next }).ok).toBe(true)
+    const second = memory.materialize()
+    expect(second).toContain("needle-34")
+    expect(second).not.toContain("needle-NEW")
+    expect(memory.read({ ref: next, find: "ABSENT_QUERY" }).ok).toBe(true)
+    expect(memory.materialize()).toContain("No literal matches")
+    store.close()
+  })
+
+  test("file decoding refuses invalid UTF-8 and preserves untouched BOM/newline bytes", () => {
+    const { cwd, store, memory } = setup()
+    writeFileSync(join(cwd, "binary"), Buffer.from([0x61, 0xff, 0x62]))
+    const refused = memory.read({ path: "binary" })
+    expect(refused.ok).toBe(false)
+    expect(refused.message).toContain("UTF-8")
+    writeFileSync(join(cwd, "bom.txt"), "\ufeffabc\r\n")
+    expect(memory.read({ path: "bom.txt" }).ok).toBe(true)
+    expect(memory.edit({ path: "bom.txt", edits: [{ oldText: "abc", newText: "\ud800" }] }).ok).toBe(false)
+    expect(memory.edit({ path: "bom.txt", edits: [{ oldText: "abc", newText: "XYZ" }] }).ok).toBe(true)
+    expect(readFileSync(join(cwd, "bom.txt"), "utf8")).toBe("\ufeffXYZ\r\n")
+    store.close()
+  })
+
+  test("explicit view budgets can expand an existing selection and symlinks are not replaced", () => {
+    const { cwd, store, memory } = setup(2000)
+    const path = join(cwd, "target.txt")
+    writeFileSync(path, "content\n".repeat(100))
+    memory.read({ path: "target.txt", budgetTokens: 128 })
+    const before = memory.totalTokens()
+    memory.read({ path: "target.txt", budgetTokens: 500 })
+    expect(memory.totalTokens()).toBeGreaterThan(before)
+    symlinkSync("target.txt", join(cwd, "alias.txt"))
+    memory.clear()
+    memory.read({ path: "alias.txt" })
+    const ref = anchors(memory.materialize())[0]!
+    expect(memory.edit({ edits: [{ from: ref, through: ref, text: "NO" }] }).ok).toBe(false)
+    expect(lstatSync(join(cwd, "alias.txt")).isSymbolicLink()).toBe(true)
+    expect(readFileSync(path, "utf8")).not.toContain("NO")
     store.close()
   })
 

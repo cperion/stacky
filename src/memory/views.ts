@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -141,14 +142,15 @@ export class WorkspaceMemory {
       if (!loaded) return failure(`Reference ${request.ref} is not readable. Recovery: verify the exact ref.`)
 
       if (request.find !== undefined && request.find.length > 0 && !loaded.searched) {
-        loaded = this.searchDocument(loaded, request.find)
+        const start = parseLines(loaded.text)[loaded.startLine ?? 0]?.start ?? 0
+        loaded = this.searchDocument(loaded, request.find, start + (loaded.startChar ?? 0))
       }
       const cursorLine = loaded.startLine ?? 0
       const cursorChar = loaded.startChar ?? 0
       const { view, evicted } = this.promote(loaded, cursorLine, cursorChar, limit)
       return {
         ok: true,
-        message: `Loaded ${loaded.title} as ${view.versionRef}${view.atEnd ? "" : "; continuation is in working context"}.`,
+        message: `Loaded ${loaded.live ? "LIVE" : "READ_ONLY"} ${loaded.title} · ${loaded.live ? `current ${loaded.fileRef}` : `ref ${loaded.sourceRef}`} · snapshot ${view.versionRef}${view.atEnd ? "" : "; continuation is in working context"}.`,
         ref: loaded.live ? loaded.fileRef : loaded.sourceRef,
         evicted,
       }
@@ -219,6 +221,11 @@ export class WorkspaceMemory {
 
   totalTokens(): number {
     return estimateTokens(this.combinedRendered())
+  }
+
+  summary(): { views: number; liveViews: number; usedTokens: number; budgetTokens: number } {
+    return { views: this.views.size, liveViews: [...this.views.values()].filter((view) => view.live).length,
+      usedTokens: this.totalTokens(), budgetTokens: this.budgetTokens }
   }
 
   setBudget(tokens: number): string[] {
@@ -314,7 +321,8 @@ export class WorkspaceMemory {
     const shownPath = displayPath(this.cwd, absolute)
     const stat = statSync(absolute)
     if (!stat.isFile()) throw new Error(`Path is not a file: ${shownPath}`)
-    const text = readFileSync(absolute, "utf8")
+    if (stat.size > 64 * 1024 * 1024) throw new Error(`File exceeds the 64 MiB safety limit: ${shownPath}. Use a bounded shell query to inspect selected output.`)
+    const text = readSource(absolute)
     const fileRef = this.store.put({ kind: "file", path: shownPath, absolutePath: absolute })
     return this.versionDocument({
       sourceRef: fileRef,
@@ -397,7 +405,7 @@ export class WorkspaceMemory {
       const original = this.loadVersion(descriptor.versionRef)
       // This flag only constructs file-page links. Opening each link independently
       // checks the actual revision before granting live file authority.
-      return this.searchDocument({ ...original, live: descriptor.live === true }, descriptor.query, descriptor.after)
+      return this.searchDocument({ ...original, live: descriptor.live === true }, find ?? descriptor.query, descriptor.after)
     }
 
     const resolved = this.resolveDocument?.(ref, find)
@@ -700,7 +708,7 @@ export class WorkspaceMemory {
       const absolute = resolvePath(this.cwd, view.path as string)
       let current: string
       try {
-        current = readFileSync(absolute, "utf8")
+        current = readSource(absolute)
       } catch (error) {
         this.invalidate(view, `Live source unavailable: ${errorMessage(error)}. Recovery: read(path=${quote(view.path as string)}).`)
         continue
@@ -772,7 +780,7 @@ export class WorkspaceMemory {
         return failure(`All anchor edits must use the same file and base revision. Recovery: read(path=${quote(first.path)}).`)
       }
 
-      const current = readFileSync(resolvePath(this.cwd, first.path), "utf8")
+      const current = readSource(resolvePath(this.cwd, first.path))
       if (hashText(current) !== first.revision) {
         return failure(`Edit base is stale. Recovery: read(path=${quote(first.path)}).`)
       }
@@ -886,7 +894,7 @@ export class WorkspaceMemory {
     }
 
     try {
-      const current = readFileSync(absolute, "utf8")
+      const current = readSource(absolute)
       const revision = hashText(current)
       const liveViews = [...this.views.values()].filter((view) =>
         view.live && view.path === display && !view.invalidReason && view.revision === revision
@@ -927,11 +935,13 @@ export class WorkspaceMemory {
 
   private commitEdit(path: string, base: string | undefined, replacements: Replacement[]): MemoryResult {
     const absolute = resolvePath(this.cwd, path)
+    if (existsSync(absolute) && lstatSync(absolute).isSymbolicLink()) return failure(`Refusing to replace a symlink: ${path}. Read and edit the resolved target path explicitly.`)
     let output = base ?? ""
     for (const replacement of [...replacements].sort((a, b) => b.start - a.start)) {
       output = output.slice(0, replacement.start) + replacement.text + output.slice(replacement.end)
     }
 
+    if (!output.isWellFormed()) return failure("Replacement is not well-formed Unicode; no file was changed.")
     const pathViews = [...this.views.values()].filter((view) => view.live && view.path === path)
     const baseRevision = base === undefined ? undefined : hashText(base)
     const priorViews = pathViews.filter((view) => baseRevision === undefined || view.revision === baseRevision)
@@ -979,9 +989,9 @@ export class WorkspaceMemory {
     } else {
       let latest: string
       try {
-        latest = readFileSync(absolute, "utf8")
-      } catch {
-        return failure(`File disappeared before edit. Recovery: read(path=${quote(path)}).`)
+        latest = readSource(absolute)
+      } catch (error) {
+        return failure(`Cannot revalidate file before edit: ${errorMessage(error)}. Recovery: read(path=${quote(path)}).`)
       }
       if (hashText(latest) !== hashText(base)) {
         return failure(`File changed before edit. Recovery: read(path=${quote(path)}).`)
@@ -1194,6 +1204,16 @@ function matchingLines(lines: ParsedLine[], text: string): number[] {
 function lineAtOffset(lines: ParsedLine[], offset: number): number {
   const index = lines.findIndex((line) => offset < line.end || (line.end === line.start && offset === line.start))
   return index < 0 ? Math.max(0, lines.length - 1) : index
+}
+
+function readSource(path: string): string {
+  const stat = statSync(path)
+  if (!stat.isFile() || stat.size > 64 * 1024 * 1024) throw new Error(`Not a regular file within the 64 MiB read limit: ${path}`)
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFileSync(path)) }
+  catch (error) {
+    if (error instanceof TypeError) throw new Error(`File is not valid UTF-8 text: ${path}. Use a bounded binary-aware shell command instead.`)
+    throw error
+  }
 }
 
 function resolvePath(cwd: string, path: string): string {

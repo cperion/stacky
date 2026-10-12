@@ -44,13 +44,13 @@ export class FilePane {
 
   update(state: AgentState, budgetTokens: number): void {
     const width = paneInner(this.box, this.renderer, 0.26)
-    const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
+    const used = state.memory?.usedTokens ?? state.files.reduce((total, file) => total + file.tokenCount, 0)
     const ratio = budgetTokens > 0 ? used / budgetTokens : 0
     const pressure = ratio > 0.9 ? theme.red : ratio > 0.7 ? theme.yellow : theme.dim
     const percent = `${Math.round(ratio * 100)}%`
 
     const parts: Part[] = [
-      header("FILES", `${state.files.length}`, width),
+      header("CONTEXT", `${state.memory?.views ?? state.files.length} views`, width),
       plain("\n"),
       paneRule(width),
       plain("\n\n"),
@@ -61,7 +61,7 @@ export class FilePane {
     ]
 
     if (state.files.length === 0) {
-      parts.push(dim("Nothing read yet."))
+      parts.push(dim("No live file views."))
     } else {
       const nameWidth = Math.max(6, width - 7)
       for (const file of state.files) {
@@ -69,9 +69,11 @@ export class FilePane {
         parts.push(plain("\n"), concat([plain(name), plain(" "), dim(formatTokens(file.tokenCount))]))
       }
       parts.push(plain("\n\n"))
-      parts.push(dim("Evicted least-recently-used first."))
+      parts.push(dim("Live files · oldest attention evicted first."))
     }
 
+    const archived = state.memory ? state.memory.views - state.memory.liveViews : 0
+    if (archived > 0) parts.push(plain("\n\n"), dim(`${archived} read-only view(s) · /context to inspect`))
     this.text.content = concat(parts)
   }
 }

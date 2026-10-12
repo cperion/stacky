@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentRuntime } from "../src/agent/runtime.ts"
-import { loadSession, saveSession } from "../src/agent/persistence.ts"
+import { attachSessionAutosave, loadSession, saveSession } from "../src/agent/persistence.ts"
 import { ScriptedLLM, type ScriptStep } from "../src/llm/scripted.ts"
 
 let dir: string
@@ -20,7 +20,7 @@ function runtimeWith(steps: ScriptStep[]) {
 }
 
 describe("session persistence", () => {
-  test("saves paths, stack, history and metrics — never file contents", async () => {
+  test("checkpoints keep file snapshots in the separate archive", async () => {
     const runtime = runtimeWith([
       { tool: "push", input: { why: "root", scope: "s", knownContext: "", definitionOfDone: "d", todos: ["step one"] } },
       { tool: "read", input: { path: "a.txt" } },
@@ -43,6 +43,19 @@ describe("session persistence", () => {
     expect(state.files.map((f) => f.path)).toEqual(["a.txt"])
     expect(state.userRequest?.message).toBe("Explain?")
     expect(state.metrics.pushes).toBe(1)
+  })
+
+  test("failed autosaves surface one diagnostic without a notification loop", async () => {
+    const runtime = runtimeWith([])
+    const stop = attachSessionAutosave(runtime, join(dir, "a.txt", "session.json"), 5)
+    try {
+      runtime.note("trigger save")
+      await new Promise((resolve) => setTimeout(resolve, 75))
+      runtime.note("trigger another save")
+      await new Promise((resolve) => setTimeout(resolve, 75))
+      const warnings = runtime.snapshot().conversation.filter((entry) => entry.text.startsWith("Session checkpoint was not saved:"))
+      expect(warnings).toHaveLength(1)
+    } finally { stop(); runtime.dispose() }
   })
 
   test("restores an empty stack as push mode", async () => {

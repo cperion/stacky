@@ -427,7 +427,7 @@ export function buildDashboard(state: AgentState, width: number, visible: boolea
   if (!visible || maxRows < 1) return plain("")
   const rows: Part[][] = []
   const field = (label: string, value: string) => rows.push([
-    dim(label.padEnd(7)), plain(clipText(value.replace(/\s+/g, " "), Math.max(1, width - 7))),
+    dim(label.padEnd(8)), plain(clipText(value.replace(/\s+/g, " "), Math.max(1, width - 8))),
   ])
   const top = state.stack.at(-1)
   if (top) {
@@ -437,9 +437,9 @@ export function buildDashboard(state: AgentState, width: number, visible: boolea
     if (pending.length === 0) field("✓", "Checklist resolved")
     if (state.stack.length > 1) field("STACK", state.stack.slice(0, -1).map((frame) => frame.title).join(" › "))
   }
-  if (state.files.length > 0) {
-    const used = state.files.reduce((total, file) => total + file.tokenCount, 0)
-    field("FILES", `${state.files.length} · ${formatTokens(used)} / ${formatTokens(budgetTokens)} tokens · ${state.files.map((file) => file.path).join(" · ")}`)
+  if (state.files.length > 0 || (state.memory?.views ?? 0) > 0) {
+    const used = state.memory?.usedTokens ?? state.files.reduce((total, file) => total + file.tokenCount, 0)
+    field("CONTEXT", `${state.memory?.views ?? state.files.length} views · ${formatTokens(used)} / ${formatTokens(budgetTokens)} tokens${state.files.length ? ` · ${state.files.map((file) => file.path).join(" · ")}` : " · /context to inspect"}`)
   }
   const hidden = rows.length > maxRows
   const shown = rows.slice(0, hidden ? Math.max(0, maxRows - 1) : maxRows)

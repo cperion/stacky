@@ -64,7 +64,6 @@ export class FrameHistory {
 
   private readonly store: MemoryStore
   private readonly agentId: string
-  private readonly knownFrameRefs = new Map<string, string>()
 
   constructor(store: MemoryStore, agentId: string) {
     this.store = store
@@ -75,7 +74,6 @@ export class FrameHistory {
   /** Return the stable resource reference for a frame owned by this agent. */
   ref(frameId: string): string {
     const ref = this.store.put({ kind: "history.frame", agentId: this.agentId, frameId })
-    this.knownFrameRefs.set(frameId, ref)
     return ref
   }
 
@@ -245,7 +243,7 @@ export class FrameHistory {
       lines.push(`- … ${stack.length - shownStack.length} older active frame(s)`)
     }
     for (const frame of shownStack) {
-      const frameRef = this.frameRefWithoutWriting(frame.id, openById.get(frame.id))
+      const frameRef = this.frameRefWithoutWriting(openById.get(frame.id))
       lines.push(`- active ${oneLine(frame.title || frame.id, 120)} — ${frameRef ?? "(not archived)"}`)
     }
 
@@ -302,13 +300,16 @@ export class FrameHistory {
     const through = this.latestSequence({ agentId })
     const scope: Scope = { scope: "agent", agentId, lowerBound: 0, through }
     const page = this.collectionPage(scope, 0, EVENTS_PER_PAGE)
+    const rootScope: Scope = { scope: "children", agentId, lowerBound: 0, through }
+    const roots = this.collectionPage(rootScope, 0, 6)
     const lines = [
       `# Agent history · ${oneLine(agentId, 180)}`,
       `Reference: ${ref}`,
       "Scope: this agent only. Every event below names its exact owner; frame-owned turns are not folded into parent frames.",
       "Oldest events are shown first.",
-      "",
-      ...page.lines,
+      "", "## Root frames", ...roots.lines,
+      ...(roots.nextAfter === undefined ? [] : [`Continue children: ${this.pageRef(rootScope, roots.nextAfter)}`]),
+      "", "## Agent timeline", ...page.lines,
     ]
     if (page.nextAfter !== undefined) {
       const nextRef = this.pageRef(scope, page.nextAfter)
@@ -671,9 +672,7 @@ export class FrameHistory {
     }
   }
 
-  private frameRefWithoutWriting(frameId: string, opened?: StoredEvent): string | undefined {
-    const known = this.knownFrameRefs.get(frameId)
-    if (known) return known
+  private frameRefWithoutWriting(opened?: StoredEvent): string | undefined {
     const payload = opened && recordField(opened.value, "payload")
     return payload && stringField(payload, "frameRef")
   }
@@ -743,7 +742,8 @@ function eventSummary(entry: StoredEvent): string {
   } else {
     detail = ` · ${summarizePayload(payload ?? entry.value)}`
   }
-  const summary = `#${seq} ${type} owner=${agentId}/${frameId ?? "root"}${detail}`
+  const frameRef = payload && stringField(payload, "frameRef")
+  const summary = `#${seq} ${type} owner=${agentId}/${frameId ?? "root"}${frameRef ? ` frame=${frameRef}` : ""}${detail}`
   return `- ${oneLine(summary, MAX_SUMMARY_CHARS)} — ${entry.ref}`
 }
 

@@ -159,7 +159,7 @@ export type AgentState = {
   userRequest?: UserRequestRecord
   metrics: Metrics
   streaming?: StreamingState
-  memory?: { historyRef: string; directory: string; usedTokens: number; budgetTokens: number; views: number }
+  memory?: { historyRef: string; directory: string; usedTokens: number; budgetTokens: number; views: number; liveViews: number }
 }
 
 export type Metrics = {
@@ -176,7 +176,7 @@ export type Metrics = {
   outcomes: Record<PopOutcome, number>
 }
 
-/** Serializable runtime state. File contents are never included — only paths. */
+/** Checkpoint: file-view selections and archive location, not embedded file snapshots. */
 export type SessionSnapshot = {
   mode: AgentMode
   conversation: ConversationEntry[]

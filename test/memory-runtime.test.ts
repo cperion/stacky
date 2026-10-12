@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
@@ -72,7 +72,7 @@ describe("unified memory through the real runtime", () => {
       (input) => {
         expect(input.prompt).toContain("exit 0")
         expect(input.prompt).not.toContain("ARCHIVE_NEEDLE")
-        artifactRef = input.prompt.match(/Captured bash · cat output.txt as ([0-9a-f]+)/)?.[1] ?? ""
+        artifactRef = input.prompt.match(/Captured bash call [0-9a-f]+ · cat output\.txt as ([0-9a-f]+)/)?.[1] ?? ""
         if (!artifactRef) throw new Error("Missing artifact receipt")
         return { tool: "read", input: { ref: artifactRef, find: "ARCHIVE_NEEDLE" } }
       },
@@ -176,6 +176,56 @@ describe("unified memory through the real runtime", () => {
     const foreign = new AgentRuntime({ cwd: join(dir, "other"), llm: new ScriptedLLM([]), memoryDirectory: join(dir, "foreign-archive") })
     runtimes.push(foreign)
     expect(() => foreign.importSession(saved)).toThrow("Session belongs to")
+  })
+
+  test("interruption refuses a late action even when the model ignores cancellation", async () => {
+    let ready!: () => void
+    let release!: () => void
+    const waiting = new Promise<void>((resolve) => { ready = resolve })
+    const deferred = new Promise<void>((resolve) => { release = resolve })
+    const agent = runtime([push("Interrupt safely"), async () => {
+      ready()
+      await deferred
+      return { tool: "bash", input: { command: "touch MUST_NOT_EXIST" } }
+    }])
+    const run = agent.request("Stop before the late tool runs")
+    await waiting
+    agent.interrupt()
+    release()
+    await run
+    expect(existsSync(join(dir, "MUST_NOT_EXIST"))).toBe(false)
+    expect(agent.metrics.toolCalls).toBe(1)
+  })
+
+  test("transient reasoning is not copied into the archive or checkpoint", async () => {
+    const agent = runtime([
+      (_input, handlers) => { handlers?.onReasoningDelta?.("TRANSIENT_REASONING_MARKER"); return push("Observe") },
+      report,
+    ])
+    await agent.request("Keep observable history")
+    succeeded(agent)
+    expect(JSON.stringify(agent.exportSession())).not.toContain("TRANSIENT_REASONING_MARKER")
+    const store = new MemoryStore(agent.snapshot().memory!.directory)
+    expect(store.events({ query: "TRANSIENT_REASONING_MARKER" })).toHaveLength(0)
+    store.close()
+  })
+
+  test("reset archives explicit abandonment and does not mutate an exported checkpoint", async () => {
+    const agent = runtime([push("Unfinished task"), report])
+    await agent.request("Begin a responsibility")
+    const checkpoint = agent.exportSession()
+    const rootRef = agent.snapshot().memory!.historyRef
+    agent.reset()
+    expect(agent.snapshot().stack).toEqual([])
+    expect(checkpoint.stack).toHaveLength(1)
+    expect(checkpoint.stack[0]!.todos[0]!.status).toBe("pending")
+    const store = new MemoryStore(agent.snapshot().memory!.directory)
+    const closed = store.events({ type: "frame.close" })
+    expect(closed).toHaveLength(1)
+    expect(JSON.stringify(closed[0]!.value)).toContain("Explicit user reset")
+    expect(JSON.stringify(closed[0]!.value)).toContain("abandoned")
+    expect(agent.inspectHistory(rootRef)).toContain("Root frames")
+    store.close()
   })
 
   test("tool schemas stay provider-compatible objects and reject ambiguous shapes", () => {
