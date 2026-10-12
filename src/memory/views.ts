@@ -14,8 +14,8 @@ import { estimateTokens } from "../agent/conversation.ts"
 import { MemoryStore } from "./store.ts"
 
 const DEFAULT_BUDGET = 24_000
+const DEFAULT_VIEW_BUDGET = 4_096
 const MIN_VIEW_TOKENS = 24
-const CONTINUATION_RESERVE = 26
 
 export type MemoryResult = {
   ok: boolean
@@ -74,6 +74,7 @@ type View = {
   beforeContext?: string
   afterContext?: string
   coveredWholeDocument: boolean
+  recoveryPath?: string
   invalidReason?: string
 }
 
@@ -90,6 +91,7 @@ type LoadedDocument = {
   startLine?: number
   startChar?: number
   searched?: boolean
+  recoveryPath?: string
 }
 
 type Replacement = { start: number; end: number; text: string; label: string }
@@ -126,7 +128,7 @@ export class WorkspaceMemory {
     if ((request.path === undefined) === (request.ref === undefined)) {
       return failure("Provide exactly one of path or ref")
     }
-    const limit = Math.min(this.budgetTokens, normalizeBudget(request.budgetTokens ?? this.budgetTokens))
+    const limit = Math.min(this.budgetTokens, normalizeBudget(request.budgetTokens ?? Math.min(DEFAULT_VIEW_BUDGET, this.budgetTokens)))
     if (limit < MIN_VIEW_TOKENS) {
       return failure(`View budget must be at least ${MIN_VIEW_TOKENS} tokens`)
     }
@@ -150,8 +152,8 @@ export class WorkspaceMemory {
         cursorLine = lineAtOffset(lines, found)
         const line = lines[cursorLine]
         const offsetInLine = found - (line?.start ?? found)
-        cursorChar = estimateTokens(line?.text ?? "") > Math.max(MIN_VIEW_TOKENS, limit - CONTINUATION_RESERVE)
-          ? Math.max(0, offsetInLine - 24)
+        cursorChar = estimateTokens(line?.text ?? "") > Math.max(MIN_VIEW_TOKENS, limit)
+          ? safeCodePointStart(line?.text ?? "", Math.max(0, offsetInLine - 24))
           : 0
       }
       const { view, evicted } = this.promote(loaded, cursorLine, cursorChar, limit)
@@ -173,12 +175,16 @@ export class WorkspaceMemory {
     }
     const descriptor = this.store.loadText(ref)
     const loaded = this.loadImmutableText(ref, descriptor.text, descriptor.title, descriptor.omittedBytes === 0)
-    const { view, evicted } = this.promote(loaded, 0, 0, this.budgetTokens)
-    return {
-      ok: true,
-      message: `Captured ${meta.title} as ${ref}${view.atEnd ? "" : "; continuation is in working context"}.`,
-      ref,
-      evicted,
+    try {
+      const { view, evicted } = this.promote(loaded, 0, 0, Math.min(DEFAULT_VIEW_BUDGET, this.budgetTokens))
+      return {
+        ok: true,
+        message: `Captured ${meta.title} as ${ref}${view.atEnd ? "" : "; continuation is in working context"}.`,
+        ref,
+        evicted,
+      }
+    } catch (error) {
+      return { ok: false, message: `Captured ${meta.title} as ${ref}, but ${errorMessage(error)}.`, ref, evicted: [] }
     }
   }
 
@@ -191,10 +197,7 @@ export class WorkspaceMemory {
   materialize(): string {
     this.refreshLiveViews()
     this.evictToBudget()
-    return [...this.views.values()]
-      .sort((a, b) => a.stableIndex - b.stableIndex)
-      .map((view) => view.rendered)
-      .join("\n")
+    return this.combinedRendered()
   }
 
   /** Compatibility listing: multiple resident views of one live file are grouped. */
@@ -220,26 +223,32 @@ export class WorkspaceMemory {
   }
 
   totalTokens(): number {
-    let total = 0
-    for (const view of this.views.values()) total += view.tokenCount
-    return total
+    return estimateTokens(this.combinedRendered())
   }
 
   setBudget(tokens: number): string[] {
     this.budgetTokens = normalizeBudget(tokens)
     if (this.budgetTokens < MIN_VIEW_TOKENS) {
-      const receipts = [...this.views.values()].map(viewLabel)
+      const receipts = [...this.views.values()].map((view) => this.viewLabel(view))
       this.views.clear()
       return receipts
     }
-    for (const view of this.views.values()) {
+    const evicted: string[] = []
+    for (const view of [...this.views.values()]) {
       if (view.limitTokens > this.budgetTokens) {
         view.limitTokens = this.budgetTokens
         const text = this.textForView(view)
-        if (text !== undefined) this.render(view, text)
+        try {
+          if (text === undefined) throw new Error("snapshot unavailable")
+          this.render(view, text)
+        } catch {
+          this.views.delete(view.key)
+          evicted.push(this.viewLabel(view))
+        }
       }
     }
-    return this.evictToBudget()
+    evicted.push(...this.evictToBudget())
+    return evicted
   }
 
   clear(): void {
@@ -263,7 +272,7 @@ export class WorkspaceMemory {
         }
       : {
           kind: "historical",
-          ref: this.pageRef(view.versionRef, view.cursorLine, view.cursorChar, view.title),
+          ref: this.pageRef(view, view.cursorLine, view.cursorChar),
           line: view.cursorLine,
           char: view.cursorChar,
           limitTokens: view.limitTokens,
@@ -344,7 +353,43 @@ export class WorkspaceMemory {
       typeof descriptor.line === "number" &&
       typeof descriptor.char === "number"
     ) {
-      return { ...this.loadVersion(descriptor.versionRef), startLine: descriptor.line, startChar: descriptor.char }
+      return { ...this.loadVersion(descriptor.versionRef), sourceRef: ref, startLine: descriptor.line, startChar: descriptor.char }
+    }
+    if (
+      descriptor.kind === "file-page" &&
+      typeof descriptor.versionRef === "string" &&
+      typeof descriptor.fileRef === "string" &&
+      typeof descriptor.path === "string" &&
+      typeof descriptor.revision === "string" &&
+      typeof descriptor.line === "number" &&
+      typeof descriptor.char === "number"
+    ) {
+      const snapshot = this.loadVersion(descriptor.versionRef)
+      let current = false
+      try {
+        current = hashText(readFileSync(resolvePath(this.cwd, descriptor.path), "utf8")) === descriptor.revision
+      } catch {
+        // The exact old snapshot remains readable even if the current resource is unavailable.
+      }
+      return current
+        ? {
+            ...snapshot,
+            sourceRef: descriptor.fileRef,
+            fileRef: descriptor.fileRef,
+            path: descriptor.path,
+            title: descriptor.path,
+            live: true,
+            startLine: descriptor.line,
+            startChar: descriptor.char,
+          }
+        : {
+            ...snapshot,
+            sourceRef: ref,
+            live: false,
+            startLine: descriptor.line,
+            startChar: descriptor.char,
+            recoveryPath: descriptor.path,
+          }
     }
 
     const resolved = this.resolveDocument?.(ref, find)
@@ -373,6 +418,7 @@ export class WorkspaceMemory {
       ...(input.path ? { path: input.path } : {}),
     })
     const snapshot = this.store.get(snapshotRef)
+    const captured = this.store.loadText(snapshotRef)
     const complete = input.complete !== false && snapshot.omittedBytes === 0
     const descriptor: Record<string, unknown> = {
       kind: input.live ? "file-version" : "document-version",
@@ -385,7 +431,7 @@ export class WorkspaceMemory {
       ...(input.path ? { path: input.path } : {}),
     }
     const versionRef = this.store.put(descriptor)
-    return { ...input, versionRef, revision, complete }
+    return { ...input, text: captured.text, versionRef, revision, complete }
   }
 
   private loadVersion(ref: string, known?: Record<string, unknown>): LoadedDocument {
@@ -418,17 +464,22 @@ export class WorkspaceMemory {
     limitTokens: number,
   ): { view: View; evicted: string[] } {
     const lines = parseLines(loaded.text)
-    const safeLine = Math.max(0, Math.min(lines.length - 1, cursorLine))
-    const safeChar = Math.max(0, Math.min(lines[safeLine]?.text.length ?? 0, cursorChar))
+    let safeLine = Math.max(0, Math.min(lines.length - 1, cursorLine))
+    let lineText = lines[safeLine]?.text ?? ""
+    let safeChar = safeCodePointStart(lineText, Math.max(0, Math.min(lineText.length, cursorChar)))
+    if (safeChar > 0 && safeChar >= lineText.length && safeLine + 1 < lines.length) {
+      safeLine += 1
+      lineText = lines[safeLine]?.text ?? ""
+      safeChar = 0
+    }
 
-    // Exact and contained reads reuse one view rather than duplicating overlapping content.
+    // Reuse only genuinely displayed content, and never cross live/historical authority modes.
     const reusable = [...this.views.values()].find((view) =>
       view.versionRef === loaded.versionRef &&
+      view.live === loaded.live &&
       !view.invalidReason &&
       safeChar === 0 &&
-      view.cursorChar === 0 &&
-      safeLine >= view.cursorLine &&
-      safeLine <= view.endLine
+      view.visibleLines.has(safeLine)
     )
     if (reusable) {
       reusable.lastUsed = ++this.clock
@@ -458,10 +509,25 @@ export class WorkspaceMemory {
       endChar: safeChar,
       atEnd: false,
       coveredWholeDocument: false,
+      ...(loaded.recoveryPath ? { recoveryPath: loaded.recoveryPath } : {}),
     }
     this.render(view, loaded.text)
+
+    const evicted: string[] = []
+    for (const existing of [...this.views.values()]) {
+      if (
+        existing.versionRef === view.versionRef &&
+        existing.live === view.live &&
+        !existing.invalidReason &&
+        displayedRangesOverlap(existing, view)
+      ) {
+        this.views.delete(existing.key)
+        evicted.push(this.viewLabel(existing))
+      }
+    }
     this.views.set(view.key, view)
-    return { view, evicted: this.evictToBudget(view.key) }
+    evicted.push(...this.evictToBudget(view.key))
+    return { view, evicted }
   }
 
   private render(view: View, text: string): void {
@@ -470,97 +536,115 @@ export class WorkspaceMemory {
     view.visibleLines.clear()
     view.invalidReason = undefined
     view.cursorLine = Math.max(0, Math.min(lines.length - 1, view.cursorLine))
+    const cursorText = lines[view.cursorLine]?.text ?? ""
+    view.cursorChar = safeCodePointStart(cursorText, Math.max(0, Math.min(cursorText.length, view.cursorChar)))
+
     const source = view.live ? `LIVE ${view.path ?? view.title}` : `READ-ONLY ${view.title}`
-    let rendered = `## ${source} ref=${view.sourceRef} version=${view.versionRef}\n`
-    if (!view.complete) rendered += "[snapshot partial: omitted bytes are unavailable]\n"
-    if (estimateTokens(rendered) >= view.limitTokens - CONTINUATION_RESERVE) {
-      rendered = fitText(`ref=${view.sourceRef} version=${view.versionRef}\n`, view.limitTokens - CONTINUATION_RESERVE)
+    let body = `## ${source} ref=${view.sourceRef} version=${view.versionRef}\n`
+    if (view.recoveryPath) {
+      body += `[snapshot page; current-file recovery: read(path=${quote(view.recoveryPath)})]\n`
     }
+    if (!view.complete) body += "[snapshot partial: omitted bytes are unavailable]\n"
+
+    const footerPreview = (line: number): string => line < lines.length
+      ? `Next: read(ref=${quote("f".repeat(64))})\n`
+      : view.complete ? "" : "[capture quota reached; omitted bytes are unavailable]\n"
+    const footerAt = (line: number, char: number): string => line < lines.length
+      ? `Next: read(ref=${quote(this.pageRef(view, line, char))})\n`
+      : view.complete ? "" : "[capture quota reached; omitted bytes are unavailable]\n"
 
     let lineIndex = view.cursorLine
     let charIndex = view.cursorChar
-    let stopped = false
+    let renderedUnit = false
     while (lineIndex < lines.length) {
-      const line = lines[lineIndex]
-      if (!line) break
-      if (charIndex > 0) {
-        const prefix = `[fragment line ${lineIndex + 1} chars ${charIndex + 1}- read-only] `
-        const room = Math.max(0, (view.limitTokens - CONTINUATION_RESERVE - estimateTokens(rendered + prefix)) * 4)
-        if (room <= 0) {
-          stopped = true
-          break
+      const line = lines[lineIndex] as ParsedLine
+      if (charIndex === 0 && (view.complete || lineIndex < lines.length - 1)) {
+        const anchor = this.store.put({ kind: "line", versionRef: view.versionRef, line: lineIndex })
+        const record = `[${anchor}|${lineIndex + 1}] ${line.text}\n`
+        const nextLine = lineIndex + 1
+        if (estimateTokens(body + record + footerPreview(nextLine)) <= view.limitTokens) {
+          body += record
+          view.visibleAnchors.set(anchor, lineIndex)
+          view.visibleLines.add(lineIndex)
+          renderedUnit = true
+          lineIndex = nextLine
+          continue
         }
-        const piece = line.text.slice(charIndex, charIndex + room)
-        rendered += `${prefix}${piece}\n`
-        charIndex += piece.length
-        if (charIndex < line.text.length) {
-          stopped = true
-          break
+      }
+
+      const ends = codePointEnds(line.text, charIndex, view.limitTokens * 4)
+      let low = 0
+      let high = ends.length - 1
+      let acceptedEnd: number | undefined
+      let acceptedRecord = ""
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2)
+        const end = ends[middle] as number
+        const nextLine = end >= line.text.length ? lineIndex + 1 : lineIndex
+        const record = `[fragment line ${lineIndex + 1} chars ${charIndex + 1}-${end} read-only] ${line.text.slice(charIndex, end)}\n`
+        if (estimateTokens(body + record + footerPreview(nextLine)) <= view.limitTokens) {
+          acceptedEnd = end
+          acceptedRecord = record
+          low = middle + 1
+        } else {
+          high = middle - 1
         }
+      }
+      if (acceptedEnd === undefined) {
+        if (renderedUnit && estimateTokens(body + footerPreview(lineIndex)) <= view.limitTokens) break
+        const oneEnd = ends[0] ?? charIndex
+        const sample = oneEnd > charIndex
+          ? `[fragment line ${lineIndex + 1} chars ${charIndex + 1}-${oneEnd} read-only] ${line.text.slice(charIndex, oneEnd)}\n`
+          : ""
+        const required = estimateTokens(body + sample + footerPreview(lineIndex))
+        throw new Error(`View budget ${view.limitTokens} cannot fit metadata and one content unit; use at least ${required} tokens`)
+      }
+      body += acceptedRecord
+      renderedUnit = true
+      charIndex = acceptedEnd
+      if (charIndex >= line.text.length) {
         lineIndex += 1
         charIndex = 0
-        continue
       }
-
-      const anchor = this.store.put({ kind: "line", versionRef: view.versionRef, line: lineIndex })
-      const record = `[${anchor}|${lineIndex + 1}] ${line.text}\n`
-      if (estimateTokens(rendered + record) <= view.limitTokens - CONTINUATION_RESERVE) {
-        rendered += record
-        view.visibleAnchors.set(anchor, lineIndex)
-        view.visibleLines.add(lineIndex)
-        lineIndex += 1
-        continue
-      }
-
-      const fragmentPrefix = `[fragment line ${lineIndex + 1} chars 1- read-only] `
-      const room = Math.max(0, (view.limitTokens - CONTINUATION_RESERVE - estimateTokens(rendered + fragmentPrefix)) * 4)
-      if (room > 0) {
-        const piece = line.text.slice(0, room)
-        rendered += `${fragmentPrefix}${piece}\n`
-        charIndex = piece.length
-        if (charIndex >= line.text.length) {
-          lineIndex += 1
-          charIndex = 0
-        }
-      }
-      stopped = true
       break
     }
 
-    const atPhysicalEnd = lineIndex >= lines.length
-    if (!atPhysicalEnd) {
-      const next = this.pageRef(view.versionRef, lineIndex, charIndex, view.title)
-      const footer = `Next: read(ref=${quote(next)})\n`
-      while (estimateTokens(rendered + footer) > view.limitTokens && rendered.length > 0) {
-        rendered = rendered.slice(0, Math.max(0, rendered.length - 4))
-      }
-      rendered += footer
-    } else if (!view.complete) {
-      const footer = "[capture quota reached; omitted bytes are unavailable]\n"
-      while (estimateTokens(rendered + footer) > view.limitTokens && rendered.length > 0) {
-        rendered = rendered.slice(0, Math.max(0, rendered.length - 4))
-      }
-      rendered += footer
+    if (!renderedUnit && lines.length > 0) {
+      throw new Error(`View budget ${view.limitTokens} cannot fit metadata and one content unit`)
     }
-    if (estimateTokens(rendered) > view.limitTokens) rendered = fitText(rendered, view.limitTokens)
+    const footer = footerAt(lineIndex, charIndex)
+    const rendered = body + footer
+    if (estimateTokens(rendered) > view.limitTokens) {
+      throw new Error(`View renderer exceeded its ${view.limitTokens}-token budget`)
+    }
+    if (lineIndex === view.cursorLine && charIndex === view.cursorChar && lineIndex < lines.length) {
+      throw new Error("View pagination made no progress")
+    }
 
     view.rendered = rendered
     view.tokenCount = estimateTokens(rendered)
     view.endLine = Math.min(lines.length - 1, charIndex > 0 ? lineIndex : Math.max(view.cursorLine, lineIndex - 1))
     view.endChar = charIndex
-    view.atEnd = atPhysicalEnd
-    view.coveredWholeDocument = view.cursorLine === 0 && view.cursorChar === 0 && atPhysicalEnd
+    view.atEnd = lineIndex >= lines.length
+    view.coveredWholeDocument = view.cursorLine === 0 && view.cursorChar === 0 && view.atEnd && view.complete
     view.beforeContext = view.cursorLine > 0 ? lines[view.cursorLine - 1]?.text : undefined
     const afterIndex = lineIndex + (charIndex > 0 ? 1 : 0)
     view.afterContext = afterIndex < lines.length ? lines[afterIndex]?.text : undefined
-    if (stopped && view.visibleLines.size === 0 && charIndex === 0) {
-      // The continuation remains the only safe way to advance under an unusually small budget.
-      view.coveredWholeDocument = false
-    }
   }
 
-  private pageRef(versionRef: string, line: number, char: number, title: string): string {
-    return this.store.put({ kind: "page", versionRef, line, char, title })
+  private pageRef(view: View, line: number, char: number): string {
+    return view.live && view.fileRef && view.path
+      ? this.store.put({
+          kind: "file-page",
+          versionRef: view.versionRef,
+          fileRef: view.fileRef,
+          path: view.path,
+          revision: view.revision,
+          line,
+          char,
+          title: view.title,
+        })
+      : this.store.put({ kind: "page", versionRef: view.versionRef, line, char, title: view.title })
   }
 
   private refreshLiveViews(): void {
@@ -604,7 +688,11 @@ export class WorkspaceMemory {
       view.complete = fresh.complete
       view.cursorLine = relocated
       view.cursorChar = 0
-      this.render(view, current)
+      try {
+        this.render(view, fresh.text)
+      } catch (error) {
+        this.invalidate(view, `${errorMessage(error)}. Recovery: read(path=${quote(view.path as string)}).`)
+      }
     }
   }
 
@@ -628,7 +716,6 @@ export class WorkspaceMemory {
 
   private editByAnchors(edits: AnchorEdit[]): MemoryResult {
     if (edits.length === 0) return failure("At least one anchor edit is required")
-    this.refreshLiveViews()
 
     try {
       const anchors = edits.map((edit, index) => this.resolveAnchorEdit(edit, index))
@@ -714,12 +801,29 @@ export class WorkspaceMemory {
       revision = version.revision
       points[pointIndex === 0 ? "first" : "second"] = descriptor.line
     }
+    if (shape === "range") {
+      const first = points.first as number
+      const second = points.second as number
+      if (first > second) {
+        throw new Error(`Edit #${index + 1} range is reversed; from must precede through`)
+      }
+      const visibleLines = new Set<number>()
+      for (const view of this.views.values()) {
+        if (view.live && !view.invalidReason && view.versionRef === versionRef) {
+          for (const line of view.visibleLines) visibleLines.add(line)
+        }
+      }
+      for (let line = first; line <= second; line++) {
+        if (!visibleLines.has(line)) {
+          throw new Error(`Edit #${index + 1} range includes line ${line + 1}, which is not fully visible. Recovery: read(path=${quote(path as string)}).`)
+        }
+      }
+    }
     return { edit, index, path: path as string, versionRef: versionRef as string, revision: revision as string, points }
   }
 
   private editByText(path: string, edits: OldEdit[]): MemoryResult {
     if (edits.length === 0) return failure(`At least one text edit is required. Recovery: read(path=${quote(path)}).`)
-    this.refreshLiveViews()
     const absolute = resolvePath(this.cwd, path)
     const display = displayPath(this.cwd, absolute)
     const existed = existsSync(absolute)
@@ -781,6 +885,47 @@ export class WorkspaceMemory {
       output = output.slice(0, replacement.start) + replacement.text + output.slice(replacement.end)
     }
 
+    const pathViews = [...this.views.values()].filter((view) => view.live && view.path === path)
+    const baseRevision = base === undefined ? undefined : hashText(base)
+    const priorViews = pathViews.filter((view) => baseRevision === undefined || view.revision === baseRevision)
+    const fileRef = this.store.put({ kind: "file", path, absolutePath: absolute })
+    const loaded = this.versionDocument({ sourceRef: fileRef, fileRef, path, title: path, live: true, text: output })
+    const outputLines = parseLines(loaded.text)
+    const sorted = [...replacements].sort((a, b) => a.start - b.start)
+    const firstOffset = sorted[0]?.start ?? 0
+    const editedOutputOffset = transformOffset(firstOffset, sorted, "start")
+    const editedLine = lineAtOffset(outputLines, editedOutputOffset)
+    const oldLines = parseLines(base ?? "")
+    const plans = priorViews.length > 0
+      ? priorViews
+          .sort((a, b) => Number(viewContainsReplacement(a, base ?? "", sorted)) - Number(viewContainsReplacement(b, base ?? "", sorted)))
+          .map((previous) => {
+            const oldStart = oldLines[previous.cursorLine]?.start ?? 0
+            const transformedStart = transformOffset(oldStart + previous.cursorChar, sorted, "start")
+            const affected = viewContainsReplacement(previous, base ?? "", sorted)
+            return {
+              affected,
+              cursor: affected
+                ? Math.min(lineAtOffset(outputLines, transformedStart), Math.max(0, editedLine - 2))
+                : lineAtOffset(outputLines, transformedStart),
+              limit: Math.min(previous.limitTokens, this.budgetTokens),
+            }
+          })
+      : [{ affected: true, cursor: Math.max(0, editedLine - 2), limit: Math.min(DEFAULT_VIEW_BUDGET, this.budgetTokens) }]
+
+    // Prove the post-edit view can be materialized before writing. Durable preview
+    // descriptors are harmless; no unseen content is granted edit authority.
+    for (const plan of plans) {
+      let preview = this.previewPromotion(loaded, plan.cursor, plan.limit)
+      if (plan.affected && !viewDisplaysLine(preview, editedLine)) {
+        plan.cursor = Math.max(0, editedLine - 2)
+        preview = this.previewPromotion(loaded, plan.cursor, plan.limit)
+        if (!viewDisplaysLine(preview, editedLine)) {
+          throw new Error(`Edited region cannot fit in the current view budget; increase the budget before editing`)
+        }
+      }
+    }
+
     // Optimistic guard immediately before the atomic rename. A writer racing after this check can still win.
     if (base === undefined) {
       if (existsSync(absolute)) return failure(`File appeared before creation. Recovery: read(path=${quote(path)}).`)
@@ -812,18 +957,35 @@ export class WorkspaceMemory {
       throw error
     }
 
-    for (const [key, view] of this.views) {
-      if (view.live && view.path === path) this.views.delete(key)
+    for (const view of pathViews) this.views.delete(view.key)
+
+    const evicted: string[] = []
+    let promoted: View | undefined
+    for (const plan of plans) {
+      const result = this.promote(loaded, plan.cursor, 0, plan.limit)
+      evicted.push(...result.evicted)
+      promoted = result.view
     }
-    const loaded = this.loadLivePath(path)
-    const firstOffset = replacements.reduce((minimum, item) => Math.min(minimum, item.start), Number.POSITIVE_INFINITY)
-    const cursor = Number.isFinite(firstOffset) ? lineAtOffset(parseLines(output), firstOffset) : 0
-    const { view, evicted } = this.promote(loaded, cursor, 0, this.budgetTokens)
+    if (!promoted) throw new Error("Edited view plan was unexpectedly empty")
     return {
       ok: true,
-      message: `Edited ${path} at guarded base; loaded version ${view.versionRef} (post-check external races remain possible).`,
+      message: `Edited ${path} at guarded base; loaded version ${promoted.versionRef} (post-check external races remain possible).`,
       ref: loaded.fileRef,
       evicted,
+    }
+  }
+
+  private previewPromotion(loaded: LoadedDocument, cursorLine: number, limitTokens: number): View {
+    const resident = this.views
+    const clock = this.clock
+    const stableCounter = this.stableCounter
+    this.views = new Map()
+    try {
+      return this.promote(loaded, cursorLine, 0, limitTokens).view
+    } finally {
+      this.views = resident
+      this.clock = clock
+      this.stableCounter = stableCounter
     }
   }
 
@@ -836,9 +998,23 @@ export class WorkspaceMemory {
       const victim = candidates[0]
       if (!victim) break
       this.views.delete(victim.key)
-      evicted.push(viewLabel(victim))
+      evicted.push(this.viewLabel(victim))
     }
     return evicted
+  }
+
+  private combinedRendered(): string {
+    return [...this.views.values()]
+      .sort((a, b) => a.stableIndex - b.stableIndex)
+      .map((view) => view.rendered)
+      .join("\n")
+  }
+
+  private viewLabel(view: View): string {
+    if (view.live) {
+      return `read({ref:${quote(view.fileRef ?? view.sourceRef)}})`
+    }
+    return `read({ref:${quote(this.pageRef(view, view.cursorLine, view.cursorChar))}})`
   }
 }
 
@@ -872,11 +1048,10 @@ function anchorReplacement(edit: AnchorEdit, points: Record<string, number>, lin
   if (shape === "range") {
     const second = points.second
     if (second === undefined || !lines[second]) throw new Error(`Edit #${index + 1} has an invalid through anchor`)
-    const low = Math.min(first, second)
-    const high = Math.max(first, second)
-    const target = lines[high] as ParsedLine
+    if (first > second) throw new Error(`Edit #${index + 1} range is reversed; from must precede through`)
+    const target = lines[second] as ParsedLine
     const text = edit.text.length > 0 && target.newline && !endsWithNewline(edit.text) ? edit.text + target.newline : edit.text
-    return { start: (lines[low] as ParsedLine).start, end: target.end, text, label: `Edit #${index + 1}` }
+    return { start: (lines[first] as ParsedLine).start, end: target.end, text, label: `Edit #${index + 1}` }
   }
   const target = lines[first] as ParsedLine
   if (shape === "before") {
@@ -999,8 +1174,67 @@ function fitText(text: string, tokens: number): string {
   return output
 }
 
-function viewLabel(view: View): string {
-  return view.live && view.path ? `${view.path}@${view.versionRef}` : `${view.title}@${view.versionRef}`
+function safeCodePointStart(text: string, index: number): number {
+  if (index <= 0 || index >= text.length) return Math.max(0, Math.min(text.length, index))
+  const code = text.charCodeAt(index)
+  return code >= 0xdc00 && code <= 0xdfff ? index - 1 : index
+}
+
+function codePointEnds(text: string, start: number, maximumUnits: number): number[] {
+  const ends: number[] = []
+  let index = safeCodePointStart(text, start)
+  const maximumEnd = Math.min(text.length, index + Math.max(1, maximumUnits))
+  while (index < text.length && index < maximumEnd) {
+    const code = text.codePointAt(index)
+    index += code !== undefined && code > 0xffff ? 2 : 1
+    ends.push(index)
+  }
+  return ends
+}
+
+function displayedRangesOverlap(first: View, second: View): boolean {
+  const firstStart: [number, number] = [first.cursorLine, first.cursorChar]
+  const secondStart: [number, number] = [second.cursorLine, second.cursorChar]
+  const firstEnd = displayedEnd(first)
+  const secondEnd = displayedEnd(second)
+  return comparePosition(firstStart, secondEnd) < 0 && comparePosition(secondStart, firstEnd) < 0
+}
+
+function displayedEnd(view: View): [number, number] {
+  if (view.atEnd) return [Number.MAX_SAFE_INTEGER, 0]
+  return view.endChar > 0 ? [view.endLine, view.endChar] : [view.endLine + 1, 0]
+}
+
+function comparePosition(first: [number, number], second: [number, number]): number {
+  return first[0] - second[0] || first[1] - second[1]
+}
+
+function viewDisplaysLine(view: View, line: number): boolean {
+  return view.visibleLines.has(line) ||
+    (view.endChar > 0 && view.endLine === line) ||
+    (view.cursorChar > 0 && view.cursorLine === line && comparePosition([line, view.cursorChar], displayedEnd(view)) < 0)
+}
+
+function viewContainsReplacement(view: View, text: string, replacements: Replacement[]): boolean {
+  const lines = parseLines(text)
+  const start = (lines[view.cursorLine]?.start ?? 0) + view.cursorChar
+  const endLine = lines[view.endLine]
+  const end = view.endChar > 0
+    ? (endLine?.start ?? text.length) + view.endChar
+    : endLine?.end ?? text.length
+  return replacements.some((replacement) => replacement.start <= end && replacement.end >= start)
+}
+
+function transformOffset(offset: number, replacements: Replacement[], side: "start" | "end"): number {
+  let delta = 0
+  for (const replacement of replacements) {
+    if (offset < replacement.start) break
+    if (offset <= replacement.end) {
+      return replacement.start + delta + (side === "end" ? replacement.text.length : 0)
+    }
+    delta += replacement.text.length - (replacement.end - replacement.start)
+  }
+  return offset + delta
 }
 
 function quote(value: string): string {

@@ -21,6 +21,19 @@ type EventRow = {
   value: string
 }
 
+export type MemoryEventFilter = {
+  agentId?: string
+  frameId?: string
+  type?: string
+  query?: string
+  after?: number
+  through?: number
+  before?: number
+  parentId?: string | null
+  order?: "asc" | "desc"
+  limit?: number
+}
+
 /** Durable, exact-reference registry shared by working memory and history. */
 export class MemoryStore {
   readonly directory: string
@@ -55,11 +68,20 @@ export class MemoryStore {
         ref TEXT NOT NULL UNIQUE REFERENCES descriptors(ref),
         agent_id TEXT,
         frame_id TEXT,
+        parent_id TEXT,
         type TEXT,
         value TEXT NOT NULL
       );
+    `)
+    const eventColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(events)").all()
+    if (!eventColumns.some((column) => column.name === "parent_id")) {
+      this.db.exec("ALTER TABLE events ADD COLUMN parent_id TEXT")
+      this.db.exec("UPDATE events SET parent_id = COALESCE(json_extract(value, '$.parentId'), json_extract(value, '$.payload.parentId'))")
+    }
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS events_agent_seq ON events(agent_id, seq);
       CREATE INDEX IF NOT EXISTS events_frame_seq ON events(frame_id, seq);
+      CREATE INDEX IF NOT EXISTS events_parent_seq ON events(parent_id, seq);
       CREATE INDEX IF NOT EXISTS events_type_seq ON events(type, seq);
     `)
     for (const suffix of ["", "-wal", "-shm"]) {
@@ -146,13 +168,14 @@ export class MemoryStore {
       const ref = this.putCanonical(canonical, sha256(canonical))
       this.db
         .query(
-          "INSERT INTO events(seq, ref, agent_id, frame_id, type, value) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO events(seq, ref, agent_id, frame_id, parent_id, type, value) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           seq,
           ref,
           stringOrNull(event.agentId),
           stringOrNull(event.frameId),
+          eventParentId(event),
           stringOrNull(event.type),
           canonical,
         )
@@ -160,14 +183,7 @@ export class MemoryStore {
     })()
   }
 
-  events(filter: {
-    agentId?: string
-    frameId?: string
-    type?: string
-    query?: string
-    after?: number
-    limit?: number
-  } = {}): Array<{ ref: string; value: JsonRecord }> {
+  events(filter: MemoryEventFilter = {}): Array<{ ref: string; value: JsonRecord }> {
     this.assertOpen()
     const requestedLimit = filter.limit === undefined || !Number.isFinite(filter.limit)
       ? DEFAULT_EVENT_LIMIT
@@ -189,6 +205,11 @@ export class MemoryStore {
       clauses.push("type = ?")
       values.push(filter.type)
     }
+    if (filter.parentId === null) clauses.push("parent_id IS NULL")
+    else if (filter.parentId !== undefined) {
+      clauses.push("parent_id = ?")
+      values.push(filter.parentId)
+    }
     if (filter.query !== undefined) {
       clauses.push("instr(value, ?) > 0")
       values.push(filter.query)
@@ -197,11 +218,20 @@ export class MemoryStore {
       clauses.push("seq > ?")
       values.push(filter.after)
     }
+    if (filter.through !== undefined) {
+      clauses.push("seq <= ?")
+      values.push(filter.through)
+    }
+    if (filter.before !== undefined) {
+      clauses.push("seq < ?")
+      values.push(filter.before)
+    }
     values.push(limit)
 
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""
+    const order = filter.order === "desc" ? "DESC" : "ASC"
     const rows = this.db
-      .query<EventRow, Array<string | number>>(`SELECT ref, value FROM events ${where} ORDER BY seq ASC LIMIT ?`)
+      .query<EventRow, Array<string | number>>(`SELECT ref, value FROM events ${where} ORDER BY seq ${order} LIMIT ?`)
       .all(...values)
     return rows.map((row) => ({ ref: row.ref, value: JSON.parse(row.value) as JsonRecord }))
   }
@@ -308,6 +338,13 @@ function sha256(value: string | Uint8Array): string {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null
+}
+
+function eventParentId(event: JsonRecord): string | null {
+  const direct = stringOrNull(event.parentId)
+  if (direct !== null) return direct
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return null
+  return stringOrNull((event.payload as JsonRecord).parentId)
 }
 
 function errorMessage(error: unknown): string {

@@ -81,11 +81,15 @@ describe("MemoryStore", () => {
     expect(store.events({ agentId: "a" }).map((event) => event.ref)).toEqual([one, two])
     expect(store.events({ query: "%" }).map((event) => event.ref)).toEqual([one])
     expect(store.events({ frameId: "f", type: "tool", after: 0 })[0]?.value).toMatchObject({ kind: "event", seq: 1 })
+    const child = store.record({ type: "frame.open", agentId: "a", frameId: "child", parentId: "f" })
+    expect(store.events({ parentId: "f", order: "desc", through: 3, before: 4 }).map((event) => event.ref)).toEqual([child])
+    expect(store.events({ parentId: null }).map((event) => event.ref)).toEqual([one, two])
+    expect(store.events({ order: "desc", limit: 2 }).map((event) => event.ref)).toEqual([child, two])
     store.close()
 
     store = new MemoryStore(archive)
     expect(store.loadText(artifact).text).toBe("full output")
-    expect(store.events().length).toBe(2)
+    expect(store.events().length).toBe(3)
     store.close()
   })
 })
@@ -124,7 +128,7 @@ describe("WorkspaceMemory", () => {
     writeFileSync(join(cwd, "b.txt"), "b\n".repeat(200))
     memory.read({ path: "a.txt", budgetTokens: 65 })
     const second = memory.read({ path: "b.txt", budgetTokens: 65 })
-    expect(second.evicted.some((item) => item.startsWith("a.txt@"))).toBe(true)
+    expect(second.evicted.some((item) => /^read\(\{ref:"[0-9a-f]+"\}\)$/.test(item))).toBe(true)
     expect(memory.list().map((entry) => entry.path)).toEqual(["b.txt"])
     memory.capture("artifact body", { title: "result" })
     expect(memory.list().every((entry) => entry.path !== "result")).toBe(true)
@@ -231,5 +235,126 @@ describe("WorkspaceMemory", () => {
     expect(restored.read({ ref: captured.ref as string }).ok).toBe(true)
     expect(restored.materialize()).toContain("secret artifact body")
     reopened.close()
+  })
+
+  test("requires ordered, fully visible anchor ranges and never escalates edit coverage", () => {
+    const { cwd, store, memory } = setup(500)
+    const path = join(cwd, "coverage.txt")
+    writeFileSync(path, Array.from({ length: 30 }, (_, index) => `row-${index}`).join("\n"))
+    expect(memory.read({ path: "coverage.txt", find: "row-0", budgetTokens: 55 }).ok).toBe(true)
+    expect(memory.read({ path: "coverage.txt", find: "row-20", budgetTokens: 55 }).ok).toBe(true)
+    const shown = memory.materialize()
+    const first = shown.match(/^\[([0-9a-f]+)\|1\]/m)?.[1] as string
+    const distant = shown.match(/^\[([0-9a-f]+)\|21\]/m)?.[1] as string
+    expect(first).toBeDefined()
+    expect(distant).toBeDefined()
+    expect(memory.edit({ edits: [{ from: first, through: distant, text: "unsafe" }] }).ok).toBe(false)
+
+    memory.clear()
+    memory.read({ path: "coverage.txt", budgetTokens: 200 })
+    const refs = anchors(memory.materialize())
+    expect(memory.edit({ edits: [{ from: refs[1], through: refs[0], text: "reversed" }] }).ok).toBe(false)
+
+    writeFileSync(path, `inserted\n${readFileSync(path, "utf8")}`)
+    expect(memory.edit({ path: "coverage.txt", edits: [{ oldText: "row-0", newText: "changed" }] }).ok).toBe(false)
+    expect(readFileSync(path, "utf8")).toContain("row-0")
+    store.close()
+  })
+
+  test("pages long Unicode lines without splitting surrogates or trimming authorized content", () => {
+    const { cwd, store, memory } = setup(70)
+    const content = `${"😀".repeat(300)}\ntail\n`
+    writeFileSync(join(cwd, "unicode.txt"), content)
+    const firstRead = memory.read({ path: "unicode.txt", budgetTokens: 50 })
+    expect(firstRead.ok).toBe(true)
+    let rendered = memory.materialize()
+    expect(rendered).not.toContain("�")
+    expect(memory.totalTokens()).toBeLessThanOrEqual(70)
+    const firstNext = rendered.match(/Next: read\(ref="([0-9a-f]+)"\)/)?.[1] as string
+    expect(firstNext).toBeDefined()
+    const firstDescriptor = store.get(firstNext)
+    expect(firstDescriptor.kind).toBe("file-page")
+    expect(firstDescriptor.char).toBeGreaterThan(0)
+
+    memory.clear()
+    expect(memory.read({ ref: firstNext, budgetTokens: 50 }).ok).toBe(true)
+    rendered = memory.materialize()
+    expect(rendered).not.toContain("�")
+    const secondNext = rendered.match(/Next: read\(ref="([0-9a-f]+)"\)/)?.[1] as string
+    expect(secondNext).toBeDefined()
+    expect(store.get(secondNext).char).toBeGreaterThan(firstDescriptor.char as number)
+
+    const tiny = new WorkspaceMemory({ cwd, store, budgetTokens: 24 })
+    expect(tiny.read({ path: "unicode.txt", budgetTokens: 24 }).ok).toBe(false)
+    expect(tiny.materialize()).toBe("")
+    store.close()
+  })
+
+  test("keeps unchanged file pages editable and changed pages historical with recovery", () => {
+    const { cwd, store, memory } = setup(300)
+    const path = join(cwd, "page.txt")
+    writeFileSync(path, Array.from({ length: 80 }, (_, index) => `line-${index}`).join("\n"))
+    memory.read({ path: "page.txt", budgetTokens: 60 })
+    const page = memory.materialize().match(/Next: read\(ref="([0-9a-f]+)"\)/)?.[1] as string
+    memory.clear()
+    expect(memory.read({ ref: page, budgetTokens: 80 }).ok).toBe(true)
+    let shown = memory.materialize()
+    expect(shown).toContain("## LIVE page.txt")
+    const pageAnchors = anchors(shown)
+    expect(memory.edit({ edits: [{ from: pageAnchors[0], through: pageAnchors[0], text: "EDITED" }] }).ok).toBe(true)
+
+    memory.clear()
+    expect(memory.read({ ref: page, budgetTokens: 80 }).ok).toBe(true)
+    shown = memory.materialize()
+    expect(shown).toContain("READ-ONLY")
+    expect(shown).toContain('current-file recovery: read(path="page.txt")')
+    expect(memory.edit({ edits: [{ from: anchors(shown)[0], through: anchors(shown)[0], text: "NO" }] }).ok).toBe(false)
+    store.close()
+  })
+
+  test("bounds default views, separates live and historical modes, and preserves leading edit context", () => {
+    const { cwd, store, memory } = setup(10_000)
+    const path = join(cwd, "bounded.txt")
+    writeFileSync(path, "x".repeat(100_000))
+    memory.read({ path: "bounded.txt" })
+    expect(memory.totalTokens()).toBeLessThanOrEqual(4_096)
+
+    memory.clear()
+    writeFileSync(path, Array.from({ length: 20 }, (_, index) => `line-${index}`).join("\n"))
+    memory.read({ path: "bounded.txt", budgetTokens: 300 })
+    const live = memory.materialize()
+    const oldAnchor = anchors(live)[0] as string
+    expect(memory.read({ ref: oldAnchor, budgetTokens: 100 }).ok).toBe(true)
+    const mixed = memory.materialize()
+    expect(mixed).toContain("## LIVE")
+    expect(mixed).toContain("## READ-ONLY")
+
+    memory.clear()
+    writeFileSync(path, "lead-0\nlead-1\ntarget\nafter\n")
+    memory.read({ path: "bounded.txt", budgetTokens: 150 })
+    expect(memory.edit({ path: "bounded.txt", edits: [{ oldText: "target", newText: "TARGET" }] }).ok).toBe(true)
+    const edited = memory.materialize()
+    expect(edited).toContain("lead-0")
+    expect(edited).toContain("TARGET")
+    expect(memory.totalTokens()).toBeLessThanOrEqual(10_000)
+    store.close()
+  })
+
+  test("reports copyable eviction refs and never renders beyond a partial capture", () => {
+    const { cwd, store, memory } = setup(80)
+    writeFileSync(join(cwd, "one.txt"), "one\n".repeat(200))
+    writeFileSync(join(cwd, "two.txt"), "two\n".repeat(200))
+    memory.read({ path: "one.txt", budgetTokens: 70 })
+    const evicted = memory.read({ path: "two.txt", budgetTokens: 70 }).evicted
+    expect(evicted[0]).toMatch(/^read\(\{ref:"[0-9a-f]+"\}\)$/)
+
+    memory.clear()
+    const oversized = `${"a".repeat(8 * 1024 * 1024)}UNAVAILABLE_SUFFIX`
+    const captured = memory.capture(oversized, { title: "oversized" })
+    expect(captured.ref).toBeDefined()
+    expect(store.loadText(captured.ref as string).text).not.toContain("UNAVAILABLE_SUFFIX")
+    expect(memory.read({ ref: captured.ref as string, find: "UNAVAILABLE_SUFFIX" }).ok).toBe(false)
+    expect(memory.materialize()).not.toContain("UNAVAILABLE_SUFFIX")
+    store.close()
   })
 })
