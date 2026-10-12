@@ -126,10 +126,38 @@ for concurrent coding. Symlink replacement is refused; explicitly read/edit the
 resolved target instead. This guard applies to `edit`, not arbitrary shell writes;
 `bash` is not a filesystem sandbox.
 
+## Pinned `AGENTS.md` instructions
+
+At startup, Stacky loads `AGENTS.md` from the workspace and its ancestor directories.
+Reading a current file or directory—by path or resource reference—also checks every
+ancestor along that path. Reading `src/api/code.ts`, for example, discovers guidance
+in `src/AGENTS.md` and `src/api/AGENTS.md` without first reading those directories.
+It does not recursively load unrelated sibling/descendant instructions.
+
+These files are **pinned, current, complete views in the context pool**, labelled
+with their directory scopes. More specific guidance overrides broader guidance
+only within its subtree; system and direct user instructions take precedence.
+Symlink traversal checks both logical and resolved directory ancestry and deduplicates
+instruction files while preserving their scopes.
+
+Pinned rules refresh before inference, survive ordinary view eviction and session
+restart, and are shared across delegation without sharing code/log working views.
+New or changed applicable guidance discovered immediately before an edit refuses
+that edit so the model can review the rules first. `/new` clears ordinary attention
+but retains discovered instruction scopes. Deleted instruction files disappear;
+unreadable or incompletely captured instructions fail explicitly.
+
+Instruction tokens reserve space before ordinary views. They are never silently
+truncated or evicted—even if they alone exceed the configured budget. Such overflow
+is labelled, ordinary views are evicted, and loading further views requires a larger
+budget. Arbitrary `bash` file accesses are not intercepted: the model is instructed
+to read a directory before using shell commands to work in a new subtree.
+
 ## LRU attention
 
-`--file-budget` / `fileBudgetTokens` now limits **all resident views**, including
-files, logs, search results and history. The existing configuration name is retained
+`--file-budget` / `fileBudgetTokens` budgets **all resident views**, including
+files, logs, search results, history and pinned instructions. Pinned-only overflow
+is the explicit exception described above. The existing configuration name is retained
 for compatibility; the menu calls it the working-view budget.
 
 - Default total: 24,000 estimated tokens.

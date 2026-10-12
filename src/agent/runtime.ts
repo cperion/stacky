@@ -697,6 +697,8 @@ export class AgentRuntime {
       conversationBudgetTokens: this.files.budgetTokens,
     })
 
+    child.files.inheritInstructions(this.files)
+
     // A subagent starts on the frame it was spawned for — the frame IS the
     // delegation boundary. It gets its own stack, file working set and history.
     const frame = child.stack.push(action)
@@ -734,6 +736,7 @@ export class AgentRuntime {
       stopForwarding()
     }
 
+    this.files.inheritInstructions(child.files)
     this.metrics.subagents += 1
     this.bus.emit({ type: "tool.finished", tool: "spawn", ok })
     this.bus.emit({ type: "subagent.finished", depth: child.depth, report })

@@ -13,7 +13,7 @@ import {
 
 export const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
   bash: "Run a shell command in the workspace and observe its output. Use for search, inspection, tests, git, builds.",
-  read: "Inspect/search/page a resource and promote a bounded view into LRU working context. Supply path for a current file OR an exact ref for a file, page, artifact, frame or event. Optional find is literal text. Follow returned refs, never guess them. LIVE file lines have editable anchors; historical/log views are read-only. Evicted content can be read back.",
+  read: "Inspect/search/page a resource and promote a bounded view into LRU working context. Supply path for a current file/directory OR an exact resource ref. File/directory reads automatically pin applicable ancestor AGENTS.md instructions; nested rules apply only to their subtrees. Optional find is literal text. Follow returned refs, never guess them. LIVE file lines have editable anchors; historical/log views are read-only. Evicted content can be read back.",
   edit: 'Replace inclusive visible line anchors with {edits:[{from,through,text}]}; insert with {before,text} or {after,text}. All changes target one current file revision, with no overlapping or unseen lines. Returns refreshed views and new anchors. Compatibility: {path,edits:[{oldText,newText}]} uses the same visible-current guard; oldText="" creates a missing file.',
   push: "Enter a new task frame that must be handled before the current frame can resume. This is how you record a discovered prerequisite or a focused sub-investigation. It becomes the new top of stack.",
   spawn:

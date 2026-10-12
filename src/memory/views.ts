@@ -5,12 +5,14 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
-import { dirname, isAbsolute, relative, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { estimateTokens } from "../agent/conversation.ts"
 import { MemoryStore } from "./store.ts"
 
@@ -57,6 +59,7 @@ type View = {
   path?: string
   title: string
   live: boolean
+  pinned: boolean
   versionRef: string
   revision: string
   complete: boolean
@@ -107,7 +110,7 @@ type ExportedView = {
   limitTokens: number
 }
 
-/** Reference-addressed, hard-token-bounded working views. */
+/** Reference-addressed LRU views with non-evictable repository instructions. */
 export class WorkspaceMemory {
   readonly store: MemoryStore
   readonly cwd: string
@@ -117,12 +120,16 @@ export class WorkspaceMemory {
   private clock = 0
   private stableCounter = 0
   private notices: string[] = []
+  private instructionDirectories = new Set<string>()
+  private instructionPaths = new Set<string>()
+  private instructionScopes = new Map<string, Set<string>>()
 
   constructor(options: WorkspaceMemoryOptions) {
     this.cwd = resolve(options.cwd)
     this.store = options.store
     this.budgetTokens = normalizeBudget(options.budgetTokens ?? DEFAULT_BUDGET)
     this.resolveDocument = options.resolveDocument
+    this.discoverInstructions(this.cwd)
   }
 
   read(input: { path?: string; ref?: string; find?: string; budgetTokens?: number } | string): MemoryResult {
@@ -180,15 +187,45 @@ export class WorkspaceMemory {
   }
 
   edit(input: { edits: AnchorEdit[] } | { path: string; edits: OldEdit[] }): MemoryResult {
+    try {
+      let path = "path" in input ? input.path : undefined
+      if (!path) {
+        const edit = input.edits[0] as AnchorEdit | undefined
+        const ref = edit?.from ?? edit?.before ?? edit?.after
+        if (ref) {
+          const anchor = this.store.get(ref)
+          if (typeof anchor.versionRef === "string") {
+            const version = this.store.get(anchor.versionRef)
+            if (typeof version.path === "string") path = version.path
+          }
+        }
+      }
+      if (path && this.discoverInstructions(dirname(resolvePath(this.cwd, path)))) {
+        return failure("Applicable AGENTS.md instructions changed or were discovered. Review the pinned instructions in the next context before retrying this edit.")
+      }
+    } catch (error) { return failure(errorMessage(error)) }
     if ("path" in input) return this.editByText(input.path, input.edits)
     return this.editByAnchors(input.edits)
   }
 
   /** Refreshes live ranges without touching recency, then renders stable-order views. */
   materialize(): string {
+    for (const view of this.views.values()) {
+      if (!view.live || !view.path) continue
+      try { this.watchInstructionDirectories(dirname(realpathSync(resolvePath(this.cwd, view.path)))) } catch {
+        // Unavailable code views are invalidated below; existing guidance still refreshes.
+      }
+    }
+    this.refreshInstructions()
     this.refreshLiveViews()
     this.notices.push(...this.evictToBudget())
     return this.combinedRendered()
+  }
+
+  /** Share discovered guidance across delegation without copying code/log views. */
+  inheritInstructions(other: WorkspaceMemory): void {
+    for (const directory of other.instructionDirectories) this.watchInstructionDirectories(directory)
+    this.refreshInstructions()
   }
 
   takeNotices(): string[] {
@@ -231,13 +268,13 @@ export class WorkspaceMemory {
   setBudget(tokens: number): string[] {
     this.budgetTokens = normalizeBudget(tokens)
     if (this.budgetTokens < MIN_VIEW_TOKENS) {
-      const receipts = [...this.views.values()].map((view) => this.viewLabel(view))
-      this.views.clear()
+      const receipts = [...this.views.values()].filter((view) => !view.pinned).map((view) => this.viewLabel(view))
+      for (const [key, view] of this.views) if (!view.pinned) this.views.delete(key)
       return receipts
     }
     const evicted: string[] = []
     for (const view of [...this.views.values()]) {
-      if (view.limitTokens > this.budgetTokens) {
+      if (!view.pinned && view.limitTokens > this.budgetTokens) {
         view.limitTokens = this.budgetTokens
         const text = this.textForView(view)
         try {
@@ -256,6 +293,9 @@ export class WorkspaceMemory {
   clear(): void {
     this.views.clear()
     this.notices = []
+    this.instructionPaths.clear()
+    this.instructionScopes.clear()
+    this.discoverInstructions(this.cwd)
   }
 
   restorePaths(paths: string[]): void {
@@ -264,7 +304,7 @@ export class WorkspaceMemory {
   }
 
   exportViews(): unknown[] {
-    return [...this.views.values()].map((view): ExportedView => view.live && view.path
+    const selections = [...this.views.values()].filter((view) => !view.pinned).map((view): ExportedView => view.live && view.path
       ? {
           kind: "live",
           path: view.path,
@@ -280,11 +320,19 @@ export class WorkspaceMemory {
           char: view.cursorChar,
           limitTokens: view.limitTokens,
         })
+    return [{ kind: "instructions", directories: [...this.instructionDirectories],
+      files: [...this.views.values()].filter((view) => view.pinned).map((view) => ({ path: view.path, versionRef: view.versionRef })) }, ...selections]
   }
 
   restoreViews(values: unknown[]): void {
     this.clear()
     if (!Array.isArray(values)) return
+    for (const value of values) {
+      if (value && typeof value === "object" && "kind" in value && value.kind === "instructions" && "directories" in value && Array.isArray(value.directories)) {
+        for (const directory of value.directories) if (typeof directory === "string") this.watchInstructionDirectories(directory)
+      }
+    }
+    this.refreshInstructions()
     for (const value of values) {
       if (!isExportedView(value)) continue
       try {
@@ -316,8 +364,89 @@ export class WorkspaceMemory {
     }
   }
 
+  /** Watch ancestors, not descendants: unrelated nested guidance is not loaded. */
+  private watchInstructionDirectories(directory: string): void {
+    const watch = (start: string) => {
+      for (let current = resolve(start); ; current = dirname(current)) {
+        this.instructionDirectories.add(current)
+        if (dirname(current) === current) break
+      }
+    }
+    watch(directory)
+    try { watch(realpathSync(directory)) } catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error
+    }
+  }
+
+  private discoverInstructions(directory: string): boolean {
+    this.watchInstructionDirectories(directory)
+    return this.refreshInstructions()
+  }
+
+  private instructionScopeLabel(path: string): string {
+    return [...(this.instructionScopes.get(resolvePath(this.cwd, path)) ?? [])]
+      .sort().map((scope) => `${displayPath(this.cwd, scope) || "."}/`).join(", ")
+  }
+
+  private refreshInstructions(): boolean {
+    const scopes = new Map<string, Set<string>>()
+    for (const directory of this.instructionDirectories) {
+      const candidate = join(directory, "AGENTS.md")
+      try {
+        if (!lstatSync(candidate, { throwIfNoEntry: false })) continue
+        const path = realpathSync(candidate)
+        const directories = scopes.get(path) ?? new Set<string>()
+        directories.add(directory)
+        scopes.set(path, directories)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOTDIR") continue
+        throw new Error(`Cannot load instructions ${candidate}: ${errorMessage(error)}`)
+      }
+    }
+    const previousScopes = this.instructionScopes
+    this.instructionScopes = scopes
+    this.instructionPaths = new Set(scopes.keys())
+    let changed = false
+    for (const view of [...this.views.values()]) {
+      if (view.pinned && !this.instructionPaths.has(resolvePath(this.cwd, view.path!))) {
+        this.views.delete(view.key)
+        changed = true
+      }
+    }
+    for (const [path, directories] of scopes) {
+      const loaded = this.loadFileDocument(path)
+      const existing = [...this.views.values()].find((view) => view.pinned && resolvePath(this.cwd, view.path!) === path)
+      const scopesChanged = [...directories].sort().join("\n") !== [...(previousScopes.get(path) ?? [])].sort().join("\n")
+      if (existing?.revision === loaded.revision && !scopesChanged) continue
+      if (!loaded.complete) throw new Error(`Cannot load complete AGENTS.md instructions from ${path}; capture limit exceeded.`)
+      if (existing) this.views.delete(existing.key)
+      const result = this.promote(loaded, 0, 0, DEFAULT_VIEW_BUDGET)
+      result.view.lastUsed = existing?.lastUsed ?? 0 // automatic refresh is not an access
+      if (existing) result.view.stableIndex = existing.stableIndex
+      this.notices.push(...result.evicted)
+      changed = true
+    }
+    this.notices.push(...this.evictToBudget())
+    return changed
+  }
+
   private loadLivePath(path: string): LoadedDocument {
     const absolute = resolvePath(this.cwd, path)
+    const stat = statSync(absolute)
+    this.discoverInstructions(stat.isDirectory() ? absolute : dirname(absolute))
+    if (stat.isDirectory()) {
+      const shownPath = displayPath(this.cwd, absolute) || "."
+      const ref = this.store.put({ kind: "directory", path: shownPath, absolutePath: absolute })
+      const text = readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+        .map((entry) => JSON.stringify(entry.name + (entry.isDirectory() ? "/" : entry.isSymbolicLink() ? "@" : ""))).join("\n")
+      return this.loadImmutableText(ref, text || "(empty directory)", `Directory ${shownPath}`)
+    }
+    const physical = realpathSync(absolute)
+    this.discoverInstructions(dirname(physical))
+    return this.loadFileDocument(this.instructionPaths.has(physical) ? physical : absolute)
+  }
+
+  private loadFileDocument(absolute: string): LoadedDocument {
     const shownPath = displayPath(this.cwd, absolute)
     const stat = statSync(absolute)
     if (!stat.isFile()) throw new Error(`Path is not a file: ${shownPath}`)
@@ -342,7 +471,7 @@ export class WorkspaceMemory {
       throw new Error(`${errorMessage(error)}. Recovery: use an exact reference from working context or history.`)
     }
 
-    if (descriptor.kind === "file" && typeof descriptor.path === "string") {
+    if ((descriptor.kind === "file" || descriptor.kind === "directory") && typeof descriptor.path === "string") {
       return this.loadLivePath(typeof descriptor.absolutePath === "string" ? descriptor.absolutePath : descriptor.path)
     }
     if (descriptor.kind === "text") {
@@ -513,7 +642,20 @@ export class WorkspaceMemory {
     cursorChar: number,
     limitTokens: number,
   ): { view: View; evicted: string[] } {
+    const pinned = Boolean(loaded.live && loaded.path && this.instructionPaths.has(resolvePath(this.cwd, loaded.path)))
+    const residentPin = [...this.views.values()].find((view) => view.pinned && loaded.live && view.versionRef === loaded.versionRef)
+    if (residentPin) { residentPin.lastUsed = ++this.clock; return { view: residentPin, evicted: [] } }
     const lines = parseLines(loaded.text)
+    if (pinned) {
+      if (!loaded.complete) throw new Error(`Cannot load complete instructions from ${loaded.path}; capture limit exceeded.`)
+      cursorLine = 0
+      cursorChar = 0
+      limitTokens = estimateTokens(loaded.text) + lines.length * 40 + estimateTokens(loaded.path ?? "") * 4 + estimateTokens(this.instructionScopeLabel(loaded.path!)) + 1024
+    } else {
+      const pins = [...this.views.values()].filter((view) => view.pinned).map((view) => view.rendered).join("\n")
+      limitTokens = Math.min(limitTokens, this.budgetTokens - (pins ? estimateTokens(pins) + 1 : 0))
+      if (limitTokens < MIN_VIEW_TOKENS) throw new Error("Pinned AGENTS.md instructions occupy the working-view budget; increase the budget to load other views.")
+    }
     let safeLine = Math.max(0, Math.min(lines.length - 1, cursorLine))
     let lineText = lines[safeLine]?.text ?? ""
     let safeChar = safeCodePointStart(lineText, Math.max(0, Math.min(lineText.length, cursorChar)))
@@ -544,6 +686,7 @@ export class WorkspaceMemory {
       ...(loaded.path ? { path: loaded.path } : {}),
       title: loaded.title,
       live: loaded.live,
+      pinned,
       versionRef: loaded.versionRef,
       revision: loaded.revision,
       complete: loaded.complete,
@@ -563,6 +706,7 @@ export class WorkspaceMemory {
       ...(loaded.recoveryPath ? { recoveryPath: loaded.recoveryPath } : {}),
     }
     this.render(view, loaded.text)
+    if (pinned && !view.atEnd) throw new Error(`Cannot fit complete pinned instructions: ${loaded.path}`)
 
     const evicted: string[] = []
     for (const existing of [...this.views.values()]) {
@@ -594,7 +738,9 @@ export class WorkspaceMemory {
     const cursorText = lines[view.cursorLine]?.text ?? ""
     view.cursorChar = safeCodePointStart(cursorText, Math.max(0, Math.min(cursorText.length, view.cursorChar)))
 
-    const source = view.live ? `LIVE ${view.path ?? view.title}` : `READ-ONLY ${view.title}`
+    const source = view.pinned
+      ? `PINNED INSTRUCTIONS (LIVE) ${view.path} · scope ${this.instructionScopeLabel(view.path!)} and descendants`
+      : view.live ? `LIVE ${view.path ?? view.title}` : `READ-ONLY ${view.title}`
     let body = `## ${source} ref=${view.sourceRef} version=${view.versionRef}\n`
     if (view.recoveryPath) {
       body += `[snapshot page; current-file recovery: read(path=${quote(view.recoveryPath)})]\n`
@@ -703,7 +849,7 @@ export class WorkspaceMemory {
   }
 
   private refreshLiveViews(): void {
-    const live = [...this.views.values()].filter((view) => view.live && view.path)
+    const live = [...this.views.values()].filter((view) => view.live && view.path && !view.pinned)
     for (const view of live) {
       const absolute = resolvePath(this.cwd, view.path as string)
       let current: string
@@ -1036,7 +1182,7 @@ export class WorkspaceMemory {
     const resident = this.views
     const clock = this.clock
     const stableCounter = this.stableCounter
-    this.views = new Map()
+    this.views = new Map([...resident].filter(([, view]) => view.pinned && view.path !== loaded.path))
     try {
       return this.promote(loaded, cursorLine, 0, limitTokens).view
     } finally {
@@ -1050,7 +1196,7 @@ export class WorkspaceMemory {
     const evicted: string[] = []
     while (this.totalTokens() > this.budgetTokens && this.views.size > 0) {
       const candidates = [...this.views.values()]
-        .filter((view) => view.key !== protectedKey || this.views.size === 1)
+        .filter((view) => !view.pinned && (view.key !== protectedKey || ![...this.views.values()].some((other) => !other.pinned && other.key !== protectedKey)))
         .sort((a, b) => a.lastUsed - b.lastUsed || a.stableIndex - b.stableIndex)
       const victim = candidates[0]
       if (!victim) break
@@ -1061,10 +1207,14 @@ export class WorkspaceMemory {
   }
 
   private combinedRendered(): string {
-    return [...this.views.values()]
-      .sort((a, b) => a.stableIndex - b.stableIndex)
-      .map((view) => view.rendered)
-      .join("\n")
+    const scopeDepth = (view: View) => Math.min(...[...(this.instructionScopes.get(resolvePath(this.cwd, view.path!)) ?? [])].map((scope) => scope.split("/").length))
+    const pins = [...this.views.values()].filter((view) => view.pinned)
+      .sort((a, b) => scopeDepth(a) - scopeDepth(b) || a.path!.localeCompare(b.path!))
+    const pinnedText = pins.map((view) => view.rendered).join("\n")
+    const warning = estimateTokens(pinnedText) > this.budgetTokens
+      ? "[Pinned AGENTS.md instructions exceed the working-view budget; instructions are retained in full. Increase the budget for other views.]\n" : ""
+    return warning + [...pins, ...[...this.views.values()].filter((view) => !view.pinned).sort((a, b) => a.stableIndex - b.stableIndex)]
+      .map((view) => view.rendered).join("\n")
   }
 
   private viewLabel(view: View): string {

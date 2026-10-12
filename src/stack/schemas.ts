@@ -96,7 +96,7 @@ export const bashSchema = z.object({
 })
 
 export const readSchema = z.object({
-  path: z.string().min(1).optional().describe("Current file path. Supply exactly one of path or ref."),
+  path: z.string().min(1).optional().describe("Current file or directory path; applicable AGENTS.md instructions load automatically. Supply exactly one of path or ref."),
   ref: z.string().min(1).optional().describe("Exact reference from context/history: file, view, page, line, artifact, frame or event. Never invent references."),
   find: z.string().min(1).max(2000).optional().describe("Literal text to locate in this resource. History search covers event descriptors; follow artifact refs to search their bodies."),
   budgetTokens: z.number().int().min(128).max(24000).optional().describe("Desired view budget in estimated tokens, capped by total working memory; default at most 4096."),

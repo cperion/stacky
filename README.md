@@ -26,6 +26,9 @@ HUMAN BOUNDARY       user(request)          <- the ONLY user-visible output
 same exact references. `edit` replaces visible line-anchor ranges against a guarded
 file revision and returns refreshed views. Eviction removes attention, not the
 archived observation. Closed frames retain their own turns, child links and evidence.
+Applicable `AGENTS.md` files are pinned in full: ancestor/workspace rules load at
+startup, nested rules load when reading into their directories, and ordinary LRU
+eviction never removes them. More specific rules apply only within their subtree.
 
 See [the memory/tool contract](docs/memory.md) for examples, budgets, persistence,
 privacy, capture limits and recovery semantics. **Unlike the original design,
