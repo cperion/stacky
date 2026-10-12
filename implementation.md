@@ -1,5 +1,10 @@
 # Implementation Plan — Stack-Driven Coding Agent
 
+> Original build plan. See [docs/memory.md](docs/memory.md) for the implemented
+> durable-memory contract and [README.md](README.md) for current architecture and
+> commands. The runtime now archives historical contents and maintains bounded
+> views rather than relying on the original path-only file cache.
+
 ## 1. Goal
 
 Build a minimal autonomous coding agent in:

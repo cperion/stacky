@@ -7,17 +7,29 @@ This repository is the implementation.
 ## The idea in one paragraph
 
 The model does not chat. Every turn it must call exactly one tool, and the runtime
-decides what that tool *means*. Task state is an explicit **stack**. The files the model
-sees are an explicit **token-bounded LRU** that is re-read from disk before every
-inference, so context is never stale. The **only** way the agent produces user-visible
+decides what that tool *means*. Task state is an explicit **stack** backed by durable
+frame history. Attention is a **token-bounded LRU of views**: live file regions,
+command output, search results and historical evidence. Live regions refresh before
+inference; historical views remain explicitly read-only snapshots. The **only** way the agent produces user-visible
 output is `user(...)`. Continuation is derived from tool semantics, never inferred from
 prose.
 
 ```
-ENVIRONMENT          bash(command) · read(path) · edit(path, edits)
+ENVIRONMENT          bash(command) · read(path | ref, find?) · edit(anchor ranges)
 EXECUTION CONTROL    push(taskFrame) · pop(disposition) · todo(step) · spawn(taskFrame)
 HUMAN BOUNDARY       user(request)          <- the ONLY user-visible output
 ```
+
+## Reference-addressed memory
+
+`read` opens files, searches resources, follows history and pages output using the
+same exact references. `edit` replaces visible line-anchor ranges against a guarded
+file revision and returns refreshed views. Eviction removes attention, not the
+archived observation. Closed frames retain their own turns, child links and evidence.
+
+See [the memory/tool contract](docs/memory.md) for examples, budgets, persistence,
+privacy, capture limits and recovery semantics. **Unlike the original design,
+historical file contents and tool output are now stored on disk.**
 
 ## Quick start
 
@@ -154,11 +166,13 @@ command runs. Slash commands include:
 /help                 list commands
 /model [provider/id]  show or choose a model; /model refresh forces discovery
 /task                 full task stack and checklist
-/files                all context files
+/files                resident live file views
+/context              agent's last rendered working views and references
+/history [ref]        browse durable history and follow its references
 /thinking [on|off]    toggle the model's reasoning mode
 /thinking-blocks      toggle thinking display
 /status               runtime status
-/new                  reset the session
+/new                  clear active state; retain durable history
 /ui panes             switch to the panes interface
 /quit                 exit
 ```
@@ -235,7 +249,7 @@ Settings
   Thinking           off
   Show thinking      on
   ── Context ──
-  File budget        24000
+  Working-view budget 24000
   Conversation budget 32000
   ── Session ──
   Reset session
@@ -305,7 +319,7 @@ and network-gateway troubleshooting.
 --list-models              fetch provider lists as JSON (optionally --provider); no TUI
 --thinking                 keep the model's reasoning mode on (forces toolChoice auto)
 --cwd <path>               workspace root (default: cwd)
---file-budget <tokens>     file working-set budget (default 24000)
+--file-budget <tokens>     shared working-view budget (default 24000)
 --conversation-budget <t>  conversation budget (default 32000)
 --session <path>           persist/restore task state as JSON
 --trace <path>             append a JSONL execution trace
@@ -334,14 +348,18 @@ src/
 │   ├── prompt.ts           system rules + prompt assembly (conversation/stack/files/event)
 │   ├── conversation.ts     bounded raw history (no summaries)
 │   ├── events.ts           event bus between runtime and UI
-│   ├── persistence.ts      session save/load (paths only, never contents)
+│   ├── persistence.ts      checkpoints with archive identity and view selections
 │   ├── logger.ts           JSONL trace
 │   └── metrics.ts          counters
 ├── stack/
-│   ├── schemas.ts          Zod schemas for all six actions (the tool contract)
+│   ├── schemas.ts          Zod schemas for the eight tools
 │   └── stack.ts            TaskStack
+├── memory/
+│   ├── store.ts            SQLite reference/event registry + immutable text blobs
+│   ├── views.ts            bounded view LRU, search/paging, guarded anchor edits
+│   └── history.ts          owned frame events, tree navigation and local maps
 ├── files/
-│   └── lru.ts              token-bounded FileWorkingSet (paths only)
+│   └── lru.ts              legacy standalone file-cache helper
 ├── tools/
 │   ├── bash.ts  read.ts  edit.ts
 ├── llm/
@@ -366,8 +384,8 @@ Note: the loop is implemented inside `runtime.ts` rather than a separate `loop.t
 
 A task frame is the natural delegation boundary. `spawn({why, scope, knownContext,
 definitionOfDone})` runs that frame in a **fresh subagent** with its own task stack,
-file working set and conversation. The parent blocks on the spawn, then receives the
-subagent's report as an observation:
+working-view set and conversation. The parent blocks on the spawn, then receives the
+subagent's report as a bounded artifact plus a link to its archived frame:
 
 ```
   → spawn  Count the .js files under src/ and report the count
@@ -378,12 +396,14 @@ subagent's report as an observation:
 ▌ subagent report: 3 .js files: src/a.js, src/b.js, src/c.js
 ```
 
-- Each subagent keeps its **own stack and its own file LRU** — it does not inherit
+- Each subagent keeps its **own stack and its own view LRU** — it does not inherit
   the parent's context, and its transcript is forwarded to the parent as
   `subagent` entries that are shown indented (`⤷`) but **excluded from the parent's
   prompt** (and capped, so a chatty subagent cannot flood the parent).
-- Subagents share the working directory, so edits land on disk; the parent
-  re-reads files it cares about.
+- Subagents share the working directory and durable archive, but have distinct
+  agent/frame ownership. Edits land on disk; parent live views refresh without
+  promoting themselves. Child turns can be explicitly inspected via returned refs.
+- A child report with unresolved frames is marked incomplete, not silently successful.
 - Subagents cannot ask the human ("A subagent cannot ask the user. Report with
   `user(response:none)` instead.") and must finish with a `user(response:none)`
   report. Nesting is bounded (`maxDepth`, default 2).
@@ -394,12 +414,13 @@ subagent's report as an observation:
   Invalid output is rejected and reported back as a protocol error; it is never
   silently reinterpreted.
 - **No raw assistant text.** The only user-visible channel is `user(...)`.
-- **File freshness.** Active files are re-read from disk before every inference. If
-  conversation history conflicts with the current file context, the file context wins.
+- **File freshness.** Active live regions refresh before inference without changing
+  recency. Changed regions that cannot be safely relocated are invalidated. Current
+  views, not historical snippets, supply edit authority; stale/unseen ranges are refused.
 - **Single active task.** Only the top frame is executable. `bash`/`read`/`edit`/`pop`
   require a frame; in push mode only `push`/`user` are available.
 - **Bounded delegation.** `spawn` gives a frame to an isolated subagent (own stack,
-  own file LRU, own history). Depth is capped, subagents cannot ask the human, and
+  own view LRU, separately owned archived history). Depth is capped, subagents cannot ask the human, and
   their transcript is excluded from the parent's prompt.
 - **A frame is a checklist.** Every frame carries a short `title` and an ordered
   `todos` list. `pop` is **refused while any step is still pending** — resolve each
@@ -409,17 +430,22 @@ subagent's report as an observation:
   `unnecessary`, `abandoned`, `superseded`, `blocked`, `failed`, `partial`.
 - **User does not change the stack.** `user(response:"required")` suspends and resumes
   the *same* frame; `user(response:"none")` reports and yields.
-- **Persistence never stores file contents**, only paths; on restart everything is
-  re-materialized from disk.
+- **Durable history, bounded attention.** Raw observations and historical file snapshots
+  live in a private, unencrypted archive. Session JSON stores its location and view
+  selections. Restart refreshes current files, never silently promotes old snapshots.
+  The in-memory closed-frame stripe retains the latest 64; the archive retains all.
+- **Explicit reset.** `/new` records cancellation of active responsibilities and clears
+  working state, without deleting the archive.
 
 ## Development
 
 ```bash
-bun test          # 29 tests: stack, file LRU, runtime, persistence, streaming, config, metrics
+bun test          # runtime, memory, history, tools, providers and terminal behavior
 bunx tsc --noEmit # strict typecheck
 ```
 
 ## Not built (on purpose)
 
-Embeddings, vector search, subagents, parallel tasks, task DAGs, summarization,
-plugins, background jobs. The value is in the small instruction set; test that first.
+Embeddings/vector search, arbitrary task DAG execution, automatic summarization,
+filesystem rollback, plugins, and parallel background jobs. `spawn` is isolated but
+currently synchronous. Durable history is retrospective evidence, not time-travel execution.

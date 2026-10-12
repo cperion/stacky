@@ -1,5 +1,10 @@
 # A Simple Stack-Driven LLM Coding Agent
 
+> Original rationale. The implemented evolution—durable frame history, stable
+> references, unified read/search/paging, guarded anchor edits and a view-level
+> LRU—is specified in [docs/memory.md](docs/memory.md). Where this proposal describes
+> path-only persistence or whole-file attention, that newer contract supersedes it.
+
 ## Overview
 
 This proposal describes a minimal coding agent built around a small number of explicit runtime concepts:
