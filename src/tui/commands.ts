@@ -27,9 +27,9 @@ export type Command = {
 }
 
 const COMMANDS: Command[] = [
-  { name: "expand", usage: "/expand [thinking|tools|#number|ref]", description: "expand a thinking/tool block (Ctrl+O)",
+  { name: "expand", usage: "/expand [thinking|tools|#number]", description: "expand a thinking/tool block (Ctrl+O)",
     run: (arg, ctx) => { if (ctx.expandOutput) ctx.expandOutput(arg.trim()); else ctx.print("Output expansion is unavailable here.") } },
-  { name: "compact", usage: "/compact", description: "close expanded output (Ctrl+O)",
+  { name: "compact", usage: "/compact", description: "restore inline blocks to 20 lines",
     run: (_arg, ctx) => ctx.compactOutput?.() },
   {
     name: "help",

@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import { OutputBlocks, OutputViewer, outputPreview } from "../src/tui/output.ts"
+import { OutputBlocks, outputPreview, COMPACT_OUTPUT_LINES } from "../src/tui/output.ts"
 import { createMetrics } from "../src/agent/metrics.ts"
 import type { AgentState } from "../src/agent/types.ts"
-import { Composer } from "../src/tui/composer.ts"
+import { ChatPane } from "../src/tui/chat-pane.ts"
+import { renderToolCall } from "../src/tui/action.ts"
 
 function state(): AgentState {
   return { mode: "push", running: false, conversation: [], stack: [], closedFrames: [], files: [], metrics: createMetrics() }
@@ -16,52 +17,55 @@ test("thinking previews wrap into multiple bounded rows, including single-paragr
   expect(preview.split("\n").every((line) => line.length <= 48)).toBe(true)
 })
 
-test("expansion resolves full captured output without replacing the compact receipt", () => {
+test("20-line compact blocks expand inline without a second cap or changing model receipts", () => {
   const snapshot = state()
-  snapshot.conversation = [
-    { id: "thought", at: 0, role: "thinking", text: "plan ".repeat(400), tokens: 500 },
-    { id: "output", at: 1, role: "observation", text: "command finished (exit 0)", outputRef: "abc", tokens: 8 },
-  ]
-  const blocks = new OutputBlocks((ref) => { expect(ref).toBe("abc"); return "HEAD\n" + "x".repeat(30_000) + "\nTAIL" })
+  const entry = { id: "output", at: 1, role: "observation" as const, text: "command finished (exit 0)", outputRef: "abc", tokens: 8 }
+  snapshot.conversation = [entry]
+  const blocks = new OutputBlocks(() => Array.from({ length: 82 }, (_, index) => `line ${index + 1}`).join("\n"))
   blocks.sync(snapshot)
-  const compact = blocks.compact(snapshot.conversation[1]!, 70)
-  expect(compact).toContain("/expand #2")
-  expect(compact).not.toContain("TAIL")
-  expect(blocks.text(blocks.select("#2"))).toContain("TAIL")
-  expect(blocks.select("thinking").id).toBe("#1")
-  blocks.sync(snapshot)
-  expect(blocks.select("tools").id).toBe("#2")
-  expect(snapshot.conversation[1]!.text).toBe("command finished (exit 0)")
+  const compact = blocks.render(entry, 100)
+  expect(COMPACT_OUTPUT_LINES).toBe(20)
+  expect(compact).toContain("line 18")
+  expect(compact).not.toContain("line 82")
+  expect(compact).toContain("64 more lines, 84 total, ctrl+o to expand")
+  blocks.setExpanded("#1")
+  expect(blocks.render(entry, 100)).toContain("line 82")
+  expect(entry.text).toBe("command finished (exit 0)")
+  blocks.toggle()
+  expect(blocks.render(entry, 100)).not.toContain("line 82")
 })
 
-test("viewer expands, pages, navigates blocks, and compacts without losing the input draft", async () => {
-  const setup = await createTestRenderer({ width: 72, height: 22, kittyKeyboard: true })
-  const composer = new Composer(setup.renderer, { provider: () => "deepseek", onSubmit() {} })
-  const blocks = new OutputBlocks()
-  const snapshot = state()
-  snapshot.conversation = [
-    { id: "thought", role: "thinking", text: "BEGIN\n" + "x".repeat(12_000) + "\nLAST PAGE", at: 0, tokens: 3000 },
-    { id: "output", role: "observation", text: "test results", at: 0, tokens: 3 },
-  ]
-  blocks.sync(snapshot)
-  const viewer = new OutputViewer(setup.renderer, blocks, (open) => open ? composer.input.blur() : composer.input.focus())
-  setup.renderer.root.add(composer.box)
-  setup.renderer.root.add(viewer.box)
-  setup.renderer.keyInput.on("keypress", (key) => viewer.handleKey(key))
+test("tool-call details use the same 20-line limit and uncapped expansion", () => {
+  const entry = { tool: "edit", text: "src/file.ts\n" + Array.from({ length: 82 }, (_, index) => `+ code ${index + 1}`).join("\n") }
+  const text = (expanded: boolean) => renderToolCall(entry, 100, expanded, "#3").chunks.map((chunk) => chunk.text).join("")
+  expect(text(false)).toContain("62 more lines, 82 total, ctrl+o to expand")
+  expect(text(false)).not.toContain("code 82")
+  expect(text(true)).toContain("code 82")
+})
+
+test("panes expand the existing thinking block inline, retaining its composer and render tree", async () => {
+  const setup = await createTestRenderer({ width: 100, height: 50, kittyKeyboard: true })
+  const outputs = new OutputBlocks()
+  const chat = new ChatPane(setup.renderer, { outputs, provider: () => "deepseek", onSubmit() {} })
+  setup.renderer.root.add(chat.box)
   try {
-    composer.setText("unfinished draft")
-    viewer.open("thinking")
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("BEGIN")
-    expect(setup.captureCharFrame()).toContain("page 1/2")
-    await setup.mockInput.typeText("n")
+    chat.composer.setText("unfinished draft")
+    const snapshot = state()
+    snapshot.conversation = [{ id: "thought", role: "thinking", text: Array.from({ length: 30 }, (_, index) => `THOUGHT ${index + 1}`).join("\n"), at: 0, tokens: 100 }]
+    chat.update(snapshot, 0, true)
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("LAST PAGE")
-    await setup.mockInput.typeText("l")
+    expect(setup.captureCharFrame()).not.toContain("THOUGHT 30")
+    const children = setup.renderer.root.getChildren().length
+    outputs.toggle()
+    chat.update(snapshot, 0, true)
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("test results")
-    setup.mockInput.pressEscape()
-    expect(viewer.isOpen).toBe(false)
-    expect(composer.input.plainText).toBe("unfinished draft")
-  } finally { composer.dispose(); setup.renderer.destroy() }
+    expect(setup.captureCharFrame()).toContain("THOUGHT 30")
+    expect(setup.renderer.root.getChildren()).toHaveLength(children)
+    expect(chat.input.plainText).toBe("unfinished draft")
+    outputs.compactAll()
+    chat.update(snapshot, 0, true)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).not.toContain("THOUGHT 30")
+  } finally { chat.composer.dispose(); setup.renderer.destroy() }
 })

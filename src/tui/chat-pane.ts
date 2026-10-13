@@ -7,7 +7,6 @@ import {
   reverse,
   ScrollBoxRenderable,
   StyledText,
-  t,
   TextRenderable,
   type CliRenderer,
 } from "@opentui/core"
@@ -18,7 +17,7 @@ import { block, concat, fit, paneInner, paneRule, plain, prefixLines, wrapRaw, t
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { Composer } from "./composer.ts"
-import { OutputBlocks, outputPreview } from "./output.ts"
+import { OutputBlocks } from "./output.ts"
 import type { ProviderName } from "../llm/providers.ts"
 
 export type ChatPaneOptions = {
@@ -85,7 +84,7 @@ export class ChatPane {
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
     this.outputs.sync(state, showThinking)
     const width = paneInner(this.box, this.renderer, 0.5)
-    const signature = JSON.stringify([width, state.conversation, state.streaming, state.toolOutput, state.userRequest, state.mode, selectedChoice, showThinking])
+    const signature = JSON.stringify([width, state.conversation, state.streaming, state.toolOutput, state.userRequest, state.mode, selectedChoice, showThinking, this.outputs.revision])
     if (signature === this.lastTranscript) return
     this.lastTranscript = signature
     this.clear()
@@ -110,7 +109,7 @@ export class ChatPane {
     const streaming = state.streaming
     if (streaming?.active) this.addBlock(this.renderStreaming(streaming, showThinking, width), false)
     if (state.activeTool === "bash" && state.toolOutput) {
-      this.addBlock(plain(`→ Live output · Ctrl+O expand\n${outputPreview(state.toolOutput, width, 6, true)}`), false)
+      this.addBlock(plain(this.outputs.renderLive(width)), false)
     }
 
     if (pending?.choices?.length) {
@@ -155,10 +154,6 @@ export class ChatPane {
     this.blocks += 1
   }
 
-  private bar(color: ReturnType<typeof fg>, label: string): Part {
-    return t`${color("✻")} ${bold(label)}`
-  }
-
   private renderEntry(entry: ConversationEntry, width: number): StyledText {
     switch (entry.role) {
       case "user":
@@ -168,18 +163,18 @@ export class ChatPane {
         // shaded tint on user input) is what distinguishes the two.
         return renderMarkdown(entry.text, width, 0)
       case "thinking":
-        return plain(this.outputs.compact(entry, width))
+        return plain(this.outputs.render(entry, width))
       case "action":
-        return renderToolCall(entry, width)
+        return renderToolCall(entry, width, this.outputs.isExpanded(entry), this.outputs.label(entry))
       case "observation":
-        return plain(this.outputs.compact(entry, width))
+        return plain(this.outputs.render(entry, width))
       case "note":
         return concat([dim(block(entry.text, width, 0))])
       case "subagent": {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"
-        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
-        if (inner === "observation" || inner === "thinking") return prefixLines(plain(this.outputs.compact(entry, width - marker.length)), marker, theme.dim)
+        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width, this.outputs.isExpanded(entry), this.outputs.label(entry))])
+        if (inner === "observation" || inner === "thinking") return prefixLines(plain(this.outputs.render(entry, width - marker.length)), marker, theme.dim)
         if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
         return concat([dim(marker + entry.text)])
       }
@@ -191,9 +186,7 @@ export class ChatPane {
   private renderStreaming(streaming: StreamingState, showThinking: boolean, width: number): StyledText {
     const parts: Part[] = []
     if (streaming.reasoning && showThinking) {
-      parts.push(this.bar(fg(theme.magenta), "Thinking"))
-      parts.push(plain("\n"))
-      parts.push(plain(`${outputPreview(streaming.reasoning, width, 6, true)}\nCtrl+O expand`))
+      parts.push(plain(this.outputs.renderLive(width)))
       parts.push(plain("\n"))
     }
     if (streaming.text) {

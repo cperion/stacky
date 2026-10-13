@@ -5,18 +5,19 @@ import {
   dim,
   fg,
   StyledText,
+  ScrollBoxRenderable,
   TextRenderable,
 } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
-import { applyTheme, theme, watchChipColors } from "./theme.ts"
+import { applyTheme, theme, watchChipColors, scrollbarOptions } from "./theme.ts"
 import { block, clipText, concat, fit, formatTokens, plain, prefixLines, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { renderStatusLine, TOOL_FLASH_MS } from "./status.ts"
 import { historyStripe } from "./history.ts"
 import { Composer } from "./composer.ts"
-import { OutputBlocks, OutputViewer, outputPreview } from "./output.ts"
+import { OutputBlocks } from "./output.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -29,9 +30,8 @@ export type ReplOptions = {
 
 
 /**
- * REPL interface: output flows into the terminal's real scrollback and only a
- * compact status + prompt footer stays pinned at the bottom. Slash commands
- * replace the settings menu.
+ * REPL interface: flowing inline transcript with a pinned composer. A managed
+ * main-screen transcript lets existing blocks expand/collapse in place.
  */
 export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   let result: UiResult = "quit"
@@ -41,10 +41,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   })
 
   const renderer = await createCliRenderer({
-    screenMode: "split-footer",
-    externalOutputMode: "capture-stdout",
-    footerHeight: 8,
+    screenMode: "main-screen",
+    externalOutputMode: "passthrough",
     exitOnCtrlC: true,
+    clearOnShutdown: false,
     targetFps: 30,
     useMouse: false,
     onDestroy: () => {
@@ -75,61 +75,27 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   footer.add(live)
   footer.add(composer.box)
   footer.add(status)
-  renderer.root.add(footer)
   const outputs = new OutputBlocks((ref) => opts.runtime.inspectOutput(ref))
-  const outputViewer = new OutputViewer(renderer, outputs, (open) => {
-    if (open) {
-      input.blur()
-      renderer.footerHeight = Math.max(1, renderer.terminalHeight - 1)
-    } else {
-      footerRows = -1
-      input.focus()
-      updateFooter(opts.runtime.snapshot())
-    }
-  })
-  renderer.root.add(outputViewer.box)
+  const layout = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection: "column" })
+  const transcript = new ScrollBoxRenderable(renderer, { flexGrow: 1, scrollY: true, scrollX: false,
+    stickyScroll: true, stickyStart: "bottom", scrollbarOptions: scrollbarOptions() })
+  const liveBlock = new TextRenderable(renderer, { content: "", fg: theme.fg, wrapMode: "none", visible: false })
+  transcript.add(liveBlock)
+  layout.add(transcript)
+  layout.add(footer)
+  renderer.root.add(layout)
   input.focus()
 
-  // ---- scrollback output --------------------------------------------------
+  // ---- flowing transcript -------------------------------------------------
 
   const rendererWidth = () => Math.max(20, renderer.width - 1)
 
-  const writeBlock = (content: StyledText, shaded: boolean, trailingBlank = true): void => {
+  const writeBlock = (content: StyledText, shaded: boolean, trailingBlank = true): TextRenderable | undefined => {
     if (renderer.isDestroyed) return
-    // writeToScrollback uses the root's height before layout, so compute it from
-    // the content itself (one row per line, plus an optional blank separator).
-    const lineCount = content.chunks.reduce((n, chunk) => n + (chunk.text.split("\n").length - 1), 0) + 1
-    const height = lineCount + (trailingBlank ? 1 : 0)
-    renderer.writeToScrollback((ctx) => {
-      const root = new BoxRenderable(ctx.renderContext, {
-        width: ctx.width,
-        flexDirection: "column",
-        backgroundColor: "transparent",
-        shouldFill: false,
-      })
-      const text = new TextRenderable(ctx.renderContext, {
-        content,
-        fg: theme.fg,
-        bg: shaded ? theme.shade : "transparent",
-        wrapMode: "none",
-      })
-      if (shaded) {
-        // A full-width background box so the tint spans every line to the edge.
-        const panel = new BoxRenderable(ctx.renderContext, {
-          width: ctx.width,
-          flexDirection: "column",
-          backgroundColor: theme.shade,
-        })
-        panel.add(text)
-        root.add(panel)
-      } else {
-        root.add(text)
-      }
-      if (trailingBlank) {
-        root.add(new TextRenderable(ctx.renderContext, { content: " ", fg: theme.fg, bg: "transparent" }))
-      }
-      return { root, height, startOnNewLine: true, trailingNewline: true }
-    })
+    const text = new TextRenderable(renderer, { content: trailingBlank ? concat([content, plain("\n")]) : content,
+      width: "100%", fg: theme.fg, bg: shaded ? theme.shade : theme.bg, wrapMode: "none" })
+    transcript.insertBefore(text, liveBlock)
+    return text
   }
 
   const entryParts = (entry: ConversationEntry, width: number, showThinking: boolean): StyledText | undefined => {
@@ -140,11 +106,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         return renderMarkdown(entry.text, width, 0)
       case "thinking":
         if (!showThinking) return undefined
-        return plain(outputs.compact(entry, width))
+        return plain(outputs.render(entry, width))
       case "action":
-        return renderToolCall(entry, width)
+        return renderToolCall(entry, width, outputs.isExpanded(entry), outputs.label(entry))
       case "observation":
-        return plain(outputs.compact(entry, width))
+        return plain(outputs.render(entry, width))
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
       case "note":
@@ -153,21 +119,36 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"
         if (inner === "thinking" && !showThinking) return undefined
-        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
+        if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width, outputs.isExpanded(entry), outputs.label(entry))])
         if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
-        if (inner === "observation" || inner === "thinking") return prefixLines(plain(outputs.compact(entry, width - marker.length)), marker, theme.dim)
+        if (inner === "observation" || inner === "thinking") return prefixLines(plain(outputs.render(entry, width - marker.length)), marker, theme.dim)
         return concat([dim(marker + entry.text)])
       }
     }
   }
 
   const printedIds = new Set<string>()
+  const inlineBlocks = new Map<string, { entry: ConversationEntry; text: TextRenderable }>()
+  let inlineSignature = ""
+  const refreshInline = (): void => {
+    const signature = `${rendererWidth()}:${outputs.revision}:${opts.settings.config.showThinking}`
+    if (signature === inlineSignature) return
+    inlineSignature = signature
+    for (const { entry, text } of inlineBlocks.values()) {
+      const content = entryParts(entry, rendererWidth(), opts.settings.config.showThinking)
+      text.visible = content !== undefined
+      if (content) text.content = concat([content, plain("\n")])
+    }
+  }
   const flushConversation = (state: AgentState): void => {
     for (const entry of state.conversation) {
       if (printedIds.has(entry.id)) continue
       printedIds.add(entry.id)
       const parts = entryParts(entry, rendererWidth(), opts.settings.config.showThinking)
-      if (parts) writeBlock(parts, entry.role === "user" || entry.role === "observation")
+      if (parts) {
+        const text = writeBlock(parts, entry.role === "user" || entry.role === "observation")
+        if (text) inlineBlocks.set(entry.id, { entry, text })
+      }
     }
   }
 
@@ -197,12 +178,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const updateFooter = (state: AgentState): void => {
     if (renderer.isDestroyed) return
     outputs.sync(state, opts.settings.config.showThinking)
-    if (outputViewer.isOpen) {
-      const height = Math.max(1, renderer.terminalHeight - 1)
-      if (renderer.footerHeight !== height) renderer.footerHeight = height
-      outputViewer.refresh()
-      return
-    }
+    refreshInline()
+    const liveOutput = outputs.renderLive(rendererWidth())
+    liveBlock.visible = Boolean(liveOutput)
+    liveBlock.content = liveOutput
     status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking, "Ctrl+O expand · /help")
     live.content = liveContent(state)
     const liveRows = countLines(live.content)
@@ -230,7 +209,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     if (total !== footerRows) {
       footerRows = total
       footer.height = total
-      renderer.footerHeight = total
     }
   }
 
@@ -250,9 +228,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         ])
       }
     }
-    if (state.activeTool === "bash" && state.toolOutput) {
-      return plain(`→ Live output · Ctrl+O expand\n${outputPreview(state.toolOutput, rendererWidth(), livePreviewRows(), true)}`)
-    }
+    if (state.activeTool === "bash" && state.toolOutput) return plain("")
     const streaming = state.streaming
     if (streaming?.active) return streamingLine(streaming, rendererWidth())
     return plain("")
@@ -261,13 +237,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const streamingLine = (streaming: StreamingState, width: number): StyledText => {
     if (streaming.text) return plain(tail(streaming.text, width - 2))
     if (streaming.reasoning && opts.settings.config.showThinking) {
-      return concat([fg(theme.magenta)("✻ Thinking · Ctrl+O expand\n"), plain(outputPreview(streaming.reasoning, width, livePreviewRows(), true))])
+      return plain("")
     }
     if (streaming.tool) return concat([fg(theme.blue)("→ "), bold(fg(theme.blue)(streaming.tool)), dim(" running…")])
     return concat([dim("…")])
   }
-
-  const livePreviewRows = () => Math.max(1, Math.min(4, renderer.terminalHeight - composer.height - 4))
 
   // ---- commands -----------------------------------------------------------
 
@@ -276,8 +250,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const commandContext: CommandContext = {
     runtime: opts.runtime,
     settings: opts.settings,
-    expandOutput: (target) => outputViewer.open(target),
-    compactOutput: () => outputViewer.close(),
+    expandOutput: (target) => { outputs.setExpanded(target); updateFooter(opts.runtime.snapshot()) },
+    compactOutput: () => { outputs.compactAll(); updateFooter(opts.runtime.snapshot()) },
     print: (text) => print([plain(block(text, rendererWidth(), 0))]),
     switchUi: (mode) => {
       result = "switch"
@@ -329,11 +303,14 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   renderer.keyInput.on("keypress", (key) => {
-    if (outputViewer.isOpen && key.name === "escape" && opts.runtime.isRunning) opts.runtime.interrupt()
-    if (outputViewer.handleKey(key)) return
     if (key.ctrl && key.name === "o") {
       key.preventDefault(); key.stopPropagation()
-      try { outputViewer.toggle() } catch (error) { print([plain(error instanceof Error ? error.message : String(error))]) }
+      try { outputs.toggle(); updateFooter(opts.runtime.snapshot()) } catch (error) { print([plain(error instanceof Error ? error.message : String(error))]) }
+      return
+    }
+    if (key.name === "pageup" || key.name === "pagedown") {
+      key.preventDefault(); key.stopPropagation()
+      transcript.scrollBy((key.name === "pageup" ? -1 : 1) * Math.max(1, transcript.viewport.height - 1))
       return
     }
     if (key.ctrl && key.name === "p") {

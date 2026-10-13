@@ -112,7 +112,7 @@ Contrast comes from **hierarchy**, not from hardcoded colours:
 
 Two interfaces share the same runtime and can be switched at runtime:
 
-- **REPL** (default) — output flows into the terminal's real scrollback, and a
+- **REPL** (default) — output flows through a managed main-screen transcript, and a
   pinned footer shows the live status, the current task, the context files and the
   prompt, like a shell.
 - **Panes** (`--ui panes`) — an alternate-screen layout that adapts to the terminal:
@@ -190,7 +190,7 @@ Switch with `--ui panes|repl` on the command line as well.
 
 **Slash commands are identical in both interfaces** — type `/help`, `/model`,
 `/status`, `/theme`, `/new`, `/ui` or `/quit` in either prompt. In the panes
-interface the output appears in the chat; in the REPL it goes to the scrollback.
+interface the output appears in the chat; in the REPL it joins the flowing transcript.
 
 ### Markdown & diffs
 
@@ -230,21 +230,27 @@ background; `dark`/`light` force the direction. Change it with `--theme`,
 
 ## Expanding output
 
-Thinking and tool blocks show bounded **multiline previews**, including live thinking
-above the REPL prompt. `Ctrl+O` opens the latest block in a scrollable viewer; press it
-again to compact without losing your draft. `/expand thinking`, `/expand tools`, or
-`/expand #<number>` selects a specific block using its displayed number. Retained
-artifact references can also be opened with `/expand <ref>`.
+Thinking, long tool calls and tool results are **flowing inline blocks**. Compact
+blocks show at most **20 wrapped content lines**, followed by a footer such as:
 
-Inside the viewer: `j/k` or arrows scroll, PageUp/PageDown scroll a screen, `n/p`
-advance through bounded source pages, and `h/l` choose previous/next blocks. Escape
-closes it (and interrupts active work). REPL scrollback remains immutable: expansion
-is a temporary viewer, not a rewrite of previously printed output.
+```text
+… (62 more lines, 82 total, ctrl+o to expand)
+```
+
+`Ctrl+O` toggles the latest expandable block **in place**. Expanded blocks have no
+UI line cap—there is no overlay, separate viewer or display pagination. `/expand
+thinking`, `/expand tools`, or `/expand #<number>` targets a specific recent block;
+`/compact` restores compact mode. Your draft and focus are preserved. PageUp/PageDown
+scroll the transcript.
+
+The REPL uses a managed **main-screen** transcript rather than append-only native
+scrollback: this lets previously displayed blocks shrink and grow without printing
+duplicate copies. It remains a single flowing transcript above the composer.
 
 Tool expansion reads the captured source snapshot, not current disk state, and never
 promotes or evicts model context. File reads may expose more of that captured source
 than the model's selected view. Capture omissions remain explicitly unavailable.
-The viewer retains up to 64 recent blocks; thinking is transient, not newly archived.
+Expansion controls retain up to 64 recent blocks; thinking is transient, not archived.
 
 ## Streaming & thinking
 
