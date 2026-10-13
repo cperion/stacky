@@ -123,6 +123,8 @@ export type ConversationEntry = {
   /** Durable provenance; the bounded transcript is not the archive. */
   frameId?: string
   eventRef?: string
+  /** Immutable captured output, for UI expansion without changing model attention. */
+  outputRef?: string
   /** Set on "action" entries: the tool that was called, for display. */
   tool?: string
   /** Set on "subagent" entries: how deep the subagent is and what it was saying. */

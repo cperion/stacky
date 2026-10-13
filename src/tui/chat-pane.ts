@@ -4,7 +4,6 @@ import {
   dim,
   fg,
   TextareaRenderable,
-  italic,
   reverse,
   ScrollBoxRenderable,
   StyledText,
@@ -15,16 +14,18 @@ import {
 import { formatUserMessage } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState, UserRequestRecord } from "../agent/types.ts"
 import { theme, scrollbarOptions } from "./theme.ts"
-import { block, clampLines, concat, fit, paneInner, paneRule, plain, prefixLines, quoteBlock, wrapRaw, type Part } from "./render.ts"
+import { block, concat, fit, paneInner, paneRule, plain, prefixLines, wrapRaw, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { Composer } from "./composer.ts"
+import { OutputBlocks, outputPreview } from "./output.ts"
 import type { ProviderName } from "../llm/providers.ts"
 
 export type ChatPaneOptions = {
   onSubmit: (text: string) => void
   canSubmit?: (text: string) => boolean
   provider: () => ProviderName
+  outputs?: OutputBlocks
 }
 
 /**
@@ -39,11 +40,13 @@ export class ChatPane {
   private scroll: ScrollBoxRenderable
   private blocks = 0
   private lastTranscript = ""
+  private outputs: OutputBlocks
 
   constructor(
     private renderer: CliRenderer,
     opts: ChatPaneOptions,
   ) {
+    this.outputs = opts.outputs ?? new OutputBlocks()
     this.box = new BoxRenderable(renderer, {
       flexGrow: 1,
       flexBasis: 0,
@@ -80,6 +83,7 @@ export class ChatPane {
   }
 
   update(state: AgentState, selectedChoice: number, showThinking: boolean): void {
+    this.outputs.sync(state, showThinking)
     const width = paneInner(this.box, this.renderer, 0.5)
     const signature = JSON.stringify([width, state.conversation, state.streaming, state.toolOutput, state.userRequest, state.mode, selectedChoice, showThinking])
     if (signature === this.lastTranscript) return
@@ -95,7 +99,7 @@ export class ChatPane {
       ? state.conversation.findLast((entry) => entry.role === "agent" && entry.text === formatUserMessage(pending))?.id
       : undefined
     for (const entry of state.conversation) {
-      if (entry.role === "thinking" && !showThinking) continue
+      if ((entry.role === "thinking" || entry.subrole === "thinking") && !showThinking) continue
       const shaded = entry.role === "user" || entry.role === "observation"
       // The active selector owns the options. Once answered, the original full
       // question remains in history; no runtime/prompt data is discarded.
@@ -106,7 +110,7 @@ export class ChatPane {
     const streaming = state.streaming
     if (streaming?.active) this.addBlock(this.renderStreaming(streaming, showThinking, width), false)
     if (state.activeTool === "bash" && state.toolOutput) {
-      this.addBlock(concat([dim(`  │ ${state.toolOutput}`)]), false)
+      this.addBlock(plain(`→ Live output · Ctrl+O expand\n${outputPreview(state.toolOutput, width, 6, true)}`), false)
     }
 
     if (pending?.choices?.length) {
@@ -164,22 +168,18 @@ export class ChatPane {
         // shaded tint on user input) is what distinguishes the two.
         return renderMarkdown(entry.text, width, 0)
       case "thinking":
-        return concat([
-          this.bar(fg(theme.magenta), "Thinking"),
-          plain("\n"),
-          italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
-        ])
+        return plain(this.outputs.compact(entry, width))
       case "action":
         return renderToolCall(entry, width)
       case "observation":
-        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
+        return plain(this.outputs.compact(entry, width))
       case "note":
         return concat([dim(block(entry.text, width, 0))])
       case "subagent": {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"
         if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
-        if (inner === "observation") return concat([dim(marker + entry.text)])
+        if (inner === "observation" || inner === "thinking") return prefixLines(plain(this.outputs.compact(entry, width - marker.length)), marker, theme.dim)
         if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
         return concat([dim(marker + entry.text)])
       }
@@ -193,7 +193,7 @@ export class ChatPane {
     if (streaming.reasoning && showThinking) {
       parts.push(this.bar(fg(theme.magenta), "Thinking"))
       parts.push(plain("\n"))
-      parts.push(italic(dim(block(streaming.reasoning, width, 2, "│"))))
+      parts.push(plain(`${outputPreview(streaming.reasoning, width, 6, true)}\nCtrl+O expand`))
       parts.push(plain("\n"))
     }
     if (streaming.text) {

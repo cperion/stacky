@@ -222,6 +222,13 @@ export class AgentRuntime {
   /** Last rendered context, without refreshing/authorizing code behind an in-flight model call. */
   inspectContext(): string { return this.workingContext || "(working context empty; read a resource to load a view)" }
 
+  /** UI-only inspection of retained output; never promotes/evicts model views. */
+  inspectOutput(ref: string): string {
+    const artifact = this.store.loadText(ref)
+    return artifact.text + (artifact.omittedBytes || artifact.upstreamTruncated
+      ? "\n[Capture limited: omitted output was not retained.]" : "")
+  }
+
   inspectHistory(ref = this.history.rootRef): string {
     const document = this.history.resolve(ref)
     if (document) return document.text
@@ -240,7 +247,7 @@ export class AgentRuntime {
         ? { phaseStartedAt: this.activeToolSince ?? this.streaming?.startedAt }
         : {}),
       ...(this.activeTool === "bash" && this.toolStream
-        ? { toolOutput: this.toolStream.split("\n").filter((line) => line.trim().length > 0).at(-1) ?? "" }
+        ? { toolOutput: this.toolStream }
         : {}),
       ...(this.lastTool ? { lastTool: this.lastTool } : {}),
       conversation: [...this.conversation.entries()],
@@ -639,7 +646,7 @@ export class AgentRuntime {
     this.history.event("bash.result", { command, ok: result.ok, exitCode: value?.exitCode, error: result.error,
       outputRef: artifact.ref, captureTruncated: value?.truncated ?? false, omittedBytes: value?.omittedBytes ?? 0 }, this.stack.top?.id)
     const status = result.ok ? "command finished" : "command failed"
-    this.observe(`${status}${value ? ` (exit ${value.exitCode})` : ""}${result.error ? `: ${result.error}` : ""}\n${artifact.message}${value?.truncated ? "\nCAPTURE LIMITED: omitted output is unavailable, not another page." : ""}${this.evictionNotice(artifact)}`, result.ok)
+    this.observe(`${status}${value ? ` (exit ${value.exitCode})` : ""}${result.error ? `: ${result.error}` : ""}\n${artifact.message}${value?.truncated ? "\nCAPTURE LIMITED: omitted output is unavailable, not another page." : ""}${this.evictionNotice(artifact)}`, result.ok, artifact.ref)
     return true
   }
 
@@ -670,7 +677,7 @@ export class AgentRuntime {
         }
       }
     }
-    this.observe(`${tool}${result.ok ? "" : " FAILED"}: ${result.message}${this.evictionNotice(result)}`, result.ok)
+    this.observe(`${tool}${result.ok ? "" : " FAILED"}: ${result.message}${this.evictionNotice(result)}`, result.ok, result.outputRef)
     return true
   }
 
@@ -715,9 +722,10 @@ export class AgentRuntime {
       forwarded += 1
       const entry = event.entry
       this.addEntry("subagent", entry.text, {
-        depth: child.depth,
-        subrole: entry.role,
+        depth: entry.depth ?? child.depth,
+        subrole: entry.subrole ?? entry.role,
         ...(entry.tool ? { tool: entry.tool } : {}),
+        ...(entry.outputRef ? { outputRef: entry.outputRef } : {}),
       })
     })
 
@@ -742,7 +750,7 @@ export class AgentRuntime {
     this.bus.emit({ type: "subagent.finished", depth: child.depth, report })
     const artifact = this.files.capture(report, { title: `Subagent report · ${frame.title}`, callRef: this.activeCallRef, childFrameRef: frame.historyRef })
     this.history.event("subagent.return", { childFrameRef: frame.historyRef, reportRef: artifact.ref, ok }, this.stack.top?.id)
-    this.observe(`subagent report${child.stack.isEmpty ? "" : ` (${child.stack.depth} unresolved frame(s); not completed)`}: ${artifact.message}\nInspect child frame: read({ref:"${frame.historyRef}"})${this.evictionNotice(artifact)}`, ok)
+    this.observe(`subagent report${child.stack.isEmpty ? "" : ` (${child.stack.depth} unresolved frame(s); not completed)`}: ${artifact.message}\nInspect child frame: read({ref:"${frame.historyRef}"})${this.evictionNotice(artifact)}`, ok, artifact.ref)
     return true
   }
 
@@ -852,11 +860,11 @@ export class AgentRuntime {
   // ---------------------------------------------------------------------------
 
   /** Record a tool observation (the action entry was already added at tool start). */
-  private observe(observation: string, ok = true): void {
+  private observe(observation: string, ok = true, outputRef?: string): void {
     this.pendingToolOk = ok
-    const resultRef = this.history.event("tool.result", { tool: this.activeTool, callRef: this.activeCallRef, ok, observation }, this.stack.top?.id)
+    const resultRef = this.history.event("tool.result", { tool: this.activeTool, callRef: this.activeCallRef, ok, observation, outputRef }, this.stack.top?.id)
     const receipt = observation.length > 2400 ? `${observation.slice(0, 2200)}\n[More: read({ref:"${resultRef}"})]` : observation
-    this.addEntry("observation", receipt, { eventRef: resultRef })
+    this.addEntry("observation", receipt, { eventRef: resultRef, outputRef })
     this.observation = receipt
     this.emitState()
   }

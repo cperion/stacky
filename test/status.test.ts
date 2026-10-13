@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { AgentState } from "../src/agent/types.ts"
 import { createMetrics } from "../src/agent/metrics.ts"
+import { buildTheme } from "../src/tui/theme.ts"
 import { statusChip } from "../src/tui/status.ts"
 
 function state(overrides: Partial<AgentState>): AgentState {
@@ -75,12 +76,23 @@ describe("statusChip", () => {
     expect(statusChip(state({ mode: "execute", running: false })).label).toBe("IDLE")
   })
 
-  test("coloured chips carry a contrasting fg/bg pair", () => {
-    const wait = statusChip(state({ mode: "waiting_for_user" }))
-    expect(wait.bar).toBeDefined()
-    expect(wait.text).toBeDefined()
-    const ready = statusChip(state({ mode: "push", running: false }))
-    expect(ready.bar).toBeUndefined()
+  test("unknown palettes use native reverse video instead of guessing contrast", () => {
+    expect(buildTheme(false).chip.blue.bar).toBeUndefined()
+    expect(buildTheme(true).chip.yellow.text).toBeUndefined()
+    expect(statusChip(state({ mode: "push", running: false })).bar).toBeUndefined()
+  })
+
+  test("chip foreground tracks actual custom palette colors with linearized contrast", () => {
+    const palette = Array<string | null>(16).fill("#777777")
+    palette[0] = "#000000"
+    palette[15] = "#ffffff"
+    palette[12] = "#ffffff"
+    const colors = { palette, defaultForeground: "#777777", defaultBackground: "#777777" }
+    expect(buildTheme(false, null, colors).chip.blue.text?.slot).toBe(0)
+    palette[12] = "#0000ff"
+    expect(buildTheme(false, null, colors).chip.blue.text?.slot).toBe(15)
+    palette[12] = "#000000"
+    expect(buildTheme(false, null, colors).chip.blue.text?.slot).toBe(15)
   })
 
   test("shows elapsed time while a phase is running", () => {

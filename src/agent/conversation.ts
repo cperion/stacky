@@ -38,7 +38,7 @@ export class ConversationBuffer {
   add(
     role: ConversationRole,
     text: string,
-    meta?: { tool?: string; depth?: number; subrole?: ConversationRole; frameId?: string; eventRef?: string },
+    meta?: { tool?: string; depth?: number; subrole?: ConversationRole; frameId?: string; eventRef?: string; outputRef?: string },
     now = Date.now(),
   ): ConversationEntry {
     const entry: ConversationEntry = {
@@ -52,6 +52,7 @@ export class ConversationBuffer {
       ...(meta?.subrole ? { subrole: meta.subrole } : {}),
       ...(meta?.frameId ? { frameId: meta.frameId } : {}),
       ...(meta?.eventRef ? { eventRef: meta.eventRef } : {}),
+      ...(meta?.outputRef ? { outputRef: meta.outputRef } : {}),
     }
     this.items.push(entry)
     this.evict()

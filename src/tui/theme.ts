@@ -33,7 +33,8 @@ export type Theme = {
 }
 
 /** A chip's bar colour and the text colour that contrasts with it. */
-export type ChipColor = { bar: RGBA; text: RGBA }
+export type ChipColor = { bar?: RGBA; text?: RGBA }
+type ChipPalette = { palette: (string | null)[]; defaultForeground: string | null; defaultBackground: string | null }
 
 const DARK_FALLBACK_BG = "#1a1b26"
 const LIGHT_FALLBACK_BG = "#ffffff"
@@ -55,28 +56,37 @@ function accents(): Pick<Theme, "red" | "green" | "yellow" | "blue" | "magenta" 
 /** Relative luminance (0 dark .. 1 light) of an ANSI palette colour. */
 function luminance(color: RGBA): number {
   const [r, g, b] = color.toInts()
-  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+  const linear = (value: number) => { const s = value / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4 }
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
 }
 
-/** Black or bright white, whichever gives a higher WCAG contrast with the bar. */
-function contrastText(bar: RGBA): RGBA {
-  const l = luminance(bar)
-  const withWhite = 1.05 / (l + 0.05)
-  const withBlack = (l + 0.05) / 0.05
-  return RGBA.fromIndex(withBlack >= withWhite ? 0 : 15)
+/** Measure actual reported colours, never the placeholder RGB of an ANSI index. */
+function contrastText(bar: string, palette: ChipPalette): RGBA | undefined {
+  const background = luminance(RGBA.fromHex(bar))
+  const candidates = [
+    { hex: palette.defaultForeground, color: RGBA.defaultForeground() },
+    ...palette.palette.slice(0, 16).map((hex, index) => ({ hex, color: RGBA.fromIndex(index) })),
+  ].filter((candidate) => candidate.hex)
+    .map((candidate) => {
+      const foreground = luminance(RGBA.fromHex(candidate.hex!))
+      return { color: candidate.color, contrast: (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05) }
+    }).sort((a, b) => b.contrast - a.contrast)
+  return candidates[0] && candidates[0].contrast >= 4.5 ? candidates[0].color : undefined
 }
 
 /**
  * Chip bar + text pairs. On a dark theme use the *bright* ANSI ramp, on a light
  * theme the *normal* (darker) ramp, so the bar always stands off the theme
- * background. The text colour is then chosen per bar from its luminance, so the
- * label is always legible.
+ * background. Select readable text from the terminal's reported palette; if
+ * contrast cannot be established, use native reverse video instead.
  */
-function chipColors(light: boolean): Pick<Theme, "chip"> {
+function chipColors(light: boolean, palette?: ChipPalette): Pick<Theme, "chip"> {
   const ramp = light ? [1, 2, 3, 4, 5, 6] : [9, 10, 11, 12, 13, 14]
   const pair = (index: number): ChipColor => {
-    const bar = RGBA.fromIndex(index)
-    return { bar, text: contrastText(bar) }
+    const actual = palette?.palette[index]
+    const text = actual && palette ? contrastText(actual, palette) : undefined
+    // Unknown/custom low-contrast palettes fall back to native reverse video.
+    return text ? { bar: RGBA.fromIndex(index), text } : {}
   }
   return {
     chip: {
@@ -109,13 +119,13 @@ function deriveShade(light: boolean, backgroundHex: string | null): RGBA {
  * defaults); only `shade` is a concrete colour, and it is used solely for the
  * user-message and tool-output blocks.
  */
-export function buildTheme(light: boolean, backgroundHex: string | null = null): Theme {
+export function buildTheme(light: boolean, backgroundHex: string | null = null, palette?: ChipPalette): Theme {
   return {
     bg: RGBA.defaultBackground(),
     fg: RGBA.defaultForeground(),
     shade: deriveShade(light, backgroundHex),
     ...accents(),
-    ...chipColors(light),
+    ...chipColors(light, palette),
   }
 }
 
@@ -146,15 +156,26 @@ export async function applyTheme(renderer: CliRenderer, setting: ThemeModeSettin
   }
 
   let backgroundHex: string | null = null
+  let palette: ChipPalette | undefined
   try {
-    const palette = await renderer.getPalette({ timeout: 200 })
+    palette = await renderer.getPalette({ timeout: 200, size: 16 })
     backgroundHex = palette.defaultBackground ?? null
   } catch {
     // Terminal did not answer the palette query — fall back to defaults.
   }
 
-  theme = buildTheme(light, backgroundHex)
+  theme = buildTheme(light, backgroundHex, palette)
   return light ? "light" : "dark"
+}
+
+/** Re-evaluate contrast when the terminal palette changes; never keep stale RGB guesses. */
+export function watchChipColors(renderer: CliRenderer, setting: ThemeModeSetting, redraw: () => void): () => void {
+  const light = () => setting === "light" || (setting === "auto" && renderer.themeMode === "light")
+  const palette = (colors: ChipPalette) => { theme.chip = chipColors(light(), colors).chip; redraw() }
+  const mode = () => { theme.chip = chipColors(light()).chip; redraw() }
+  renderer.on("palette", palette)
+  renderer.on("theme_mode", mode)
+  return () => { renderer.off("palette", palette); renderer.off("theme_mode", mode) }
 }
 
 /** Terminal-native scrollbar colours, resolved lazily so they track the theme. */

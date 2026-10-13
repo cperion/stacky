@@ -85,6 +85,7 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 | `Esc` | close a menu; otherwise interrupt active work or dismiss completion — never erase a draft |
 | `Ctrl+P` | command palette in REPL; settings menu in panes |
 | `Ctrl+T` | toggle closed-frame history in the task pane |
+| `Ctrl+O` | expand the latest tool/thinking block; press again to compact |
 | `Ctrl+C` | quit |
 
 The TUI is vim-flavoured: `hjkl` drives every list and menu. While the chat
@@ -150,9 +151,11 @@ The status bar leads with a compact **state chip** — `READY` (idle at the prom
 `PLAN` (framing), `RUN` (executing), `THINK` (streaming reasoning), `WRITE` (streaming
 answer), `TOOL <name> <elapsed>` (running a tool), `WAIT ·choice|·reply` (needs you) — and it
 shows elapsed seconds / tokens-per-second while a phase runs. The status meta is
-deliberately small (model and reasoning setting); `/status` owns call counters. Each coloured chip uses an **explicit contrasting fg/bg
-pair** (dark text on bright bars, bright-white text on dark bars) so it reads well on
-any theme; `READY`/`IDLE` invert the terminal's own fg/bg. Long command output streams
+deliberately small (model and reasoning setting); `/status` owns call counters. Coloured
+chips choose contrasting text using the terminal's **actual reported palette** and
+linearized luminance, not assumed ANSI RGB values. If contrast cannot be established,
+they use native reverse video. Palette changes refresh the pairing; coloured labels
+avoid bold-to-bright remapping. `READY`/`IDLE` invert the terminal's own fg/bg. Long command output streams
 live above the prompt while `bash` runs. The status line and dashboard summaries
 fit the available width instead of pushing controls offscreen.
 
@@ -224,6 +227,24 @@ background.
 `auto` follows the terminal's reported dark/light mode and derives the tint from its
 background; `dark`/`light` force the direction. Change it with `--theme`,
 `Ctrl+P` → **Theme** (panes) or `/theme` (REPL). Accents stay ANSI palette indices.
+
+## Expanding output
+
+Thinking and tool blocks show bounded **multiline previews**, including live thinking
+above the REPL prompt. `Ctrl+O` opens the latest block in a scrollable viewer; press it
+again to compact without losing your draft. `/expand thinking`, `/expand tools`, or
+`/expand #<number>` selects a specific block using its displayed number. Retained
+artifact references can also be opened with `/expand <ref>`.
+
+Inside the viewer: `j/k` or arrows scroll, PageUp/PageDown scroll a screen, `n/p`
+advance through bounded source pages, and `h/l` choose previous/next blocks. Escape
+closes it (and interrupts active work). REPL scrollback remains immutable: expansion
+is a temporary viewer, not a rewrite of previously printed output.
+
+Tool expansion reads the captured source snapshot, not current disk state, and never
+promotes or evicts model context. File reads may expose more of that captured source
+than the model's selected view. Capture omissions remain explicitly unavailable.
+The viewer retains up to 64 recent blocks; thinking is transient, not newly archived.
 
 ## Streaming & thinking
 

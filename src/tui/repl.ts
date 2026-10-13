@@ -4,19 +4,19 @@ import {
   createCliRenderer,
   dim,
   fg,
-  italic,
   StyledText,
   TextRenderable,
 } from "@opentui/core"
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState, ConversationEntry, StreamingState } from "../agent/types.ts"
-import { applyTheme, theme } from "./theme.ts"
-import { block, clampLines, clipText, concat, fit, formatTokens, plain, prefixLines, quoteBlock, type Part } from "./render.ts"
+import { applyTheme, theme, watchChipColors } from "./theme.ts"
+import { block, clipText, concat, fit, formatTokens, plain, prefixLines, type Part } from "./render.ts"
 import { renderMarkdown } from "./markdown.ts"
 import { renderToolCall } from "./action.ts"
 import { renderStatusLine, TOOL_FLASH_MS } from "./status.ts"
 import { historyStripe } from "./history.ts"
 import { Composer } from "./composer.ts"
+import { OutputBlocks, OutputViewer, outputPreview } from "./output.ts"
 import type { SettingsController, UiResult } from "./settings.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 
@@ -76,6 +76,18 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   footer.add(composer.box)
   footer.add(status)
   renderer.root.add(footer)
+  const outputs = new OutputBlocks((ref) => opts.runtime.inspectOutput(ref))
+  const outputViewer = new OutputViewer(renderer, outputs, (open) => {
+    if (open) {
+      input.blur()
+      renderer.footerHeight = Math.max(1, renderer.terminalHeight - 1)
+    } else {
+      footerRows = -1
+      input.focus()
+      updateFooter(opts.runtime.snapshot())
+    }
+  })
+  renderer.root.add(outputViewer.box)
   input.focus()
 
   // ---- scrollback output --------------------------------------------------
@@ -128,16 +140,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         return renderMarkdown(entry.text, width, 0)
       case "thinking":
         if (!showThinking) return undefined
-        return concat([
-          fg(theme.magenta)("✻ "),
-          bold("Thinking"),
-          plain("\n"),
-          italic(dim(block(clampLines(entry.text, 40), width, 2, "│"))),
-        ])
+        return plain(outputs.compact(entry, width))
       case "action":
         return renderToolCall(entry, width)
       case "observation":
-        return quoteBlock(clampLines(entry.text, 16), width, theme.dim)
+        return plain(outputs.compact(entry, width))
       case "protocol":
         return concat([fg(theme.red)("✗ "), fg(theme.red)(block(entry.text, width, 2))])
       case "note":
@@ -145,8 +152,10 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       case "subagent": {
         const marker = `${"│ ".repeat(Math.max(0, (entry.depth ?? 1) - 1))}⤷ `
         const inner = entry.subrole ?? "observation"
+        if (inner === "thinking" && !showThinking) return undefined
         if (inner === "action") return concat([dim(marker), renderToolCall({ text: entry.text, ...(entry.tool ? { tool: entry.tool } : {}) }, width)])
         if (inner === "agent") return concat([dim(marker), plain(block(entry.text, width - marker.length, 0))])
+        if (inner === "observation" || inner === "thinking") return prefixLines(plain(outputs.compact(entry, width - marker.length)), marker, theme.dim)
         return concat([dim(marker + entry.text)])
       }
     }
@@ -187,9 +196,17 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
   const updateFooter = (state: AgentState): void => {
     if (renderer.isDestroyed) return
-    status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking)
-
-    const available = Math.max(0, renderer.terminalHeight - composer.height - 6)
+    outputs.sync(state, opts.settings.config.showThinking)
+    if (outputViewer.isOpen) {
+      const height = Math.max(1, renderer.terminalHeight - 1)
+      if (renderer.footerHeight !== height) renderer.footerHeight = height
+      outputViewer.refresh()
+      return
+    }
+    status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking, "Ctrl+O expand · /help")
+    live.content = liveContent(state)
+    const liveRows = countLines(live.content)
+    const available = Math.max(0, renderer.terminalHeight - composer.height - liveRows - 6)
     const pane = buildDashboard(
       state,
       rendererWidth(),
@@ -208,8 +225,6 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
 
     // Only touch the split-footer size when it actually changes — resizing it on
     // every tick disturbs the scroll region.
-    live.content = liveContent(state)
-    const liveRows = live.content.chunks.some((chunk) => chunk.text.length > 0) ? 1 : 0
     live.height = liveRows
     const total = stripeRows + rows + liveRows + composer.height + 1
     if (total !== footerRows) {
@@ -220,6 +235,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   const liveContent = (state: AgentState): StyledText => {
+    const room = renderer.terminalHeight - composer.height - 2
+    if (room < 1) return plain("")
+    if (room < 3 && state.running) return plain(state.streaming?.reasoning && opts.settings.config.showThinking ? "✻ Thinking · Ctrl+O" : "→ Working · Ctrl+O")
     const pending = choiceRequest(state)
     if (pending) {
       const choice = pending.choices?.[selectedChoice]
@@ -233,7 +251,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       }
     }
     if (state.activeTool === "bash" && state.toolOutput) {
-      return concat([dim("│ "), dim(tail(state.toolOutput, rendererWidth() - 3))])
+      return plain(`→ Live output · Ctrl+O expand\n${outputPreview(state.toolOutput, rendererWidth(), livePreviewRows(), true)}`)
     }
     const streaming = state.streaming
     if (streaming?.active) return streamingLine(streaming, rendererWidth())
@@ -243,11 +261,13 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const streamingLine = (streaming: StreamingState, width: number): StyledText => {
     if (streaming.text) return plain(tail(streaming.text, width - 2))
     if (streaming.reasoning && opts.settings.config.showThinking) {
-      return concat([fg(theme.magenta)("✻ "), italic(dim(tail(streaming.reasoning, width - 4)))])
+      return concat([fg(theme.magenta)("✻ Thinking · Ctrl+O expand\n"), plain(outputPreview(streaming.reasoning, width, livePreviewRows(), true))])
     }
     if (streaming.tool) return concat([fg(theme.blue)("→ "), bold(fg(theme.blue)(streaming.tool)), dim(" running…")])
     return concat([dim("…")])
   }
+
+  const livePreviewRows = () => Math.max(1, Math.min(4, renderer.terminalHeight - composer.height - 4))
 
   // ---- commands -----------------------------------------------------------
 
@@ -256,6 +276,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const commandContext: CommandContext = {
     runtime: opts.runtime,
     settings: opts.settings,
+    expandOutput: (target) => outputViewer.open(target),
+    compactOutput: () => outputViewer.close(),
     print: (text) => print([plain(block(text, rendererWidth(), 0))]),
     switchUi: (mode) => {
       result = "switch"
@@ -307,6 +329,13 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   }
 
   renderer.keyInput.on("keypress", (key) => {
+    if (outputViewer.isOpen && key.name === "escape" && opts.runtime.isRunning) opts.runtime.interrupt()
+    if (outputViewer.handleKey(key)) return
+    if (key.ctrl && key.name === "o") {
+      key.preventDefault(); key.stopPropagation()
+      try { outputViewer.toggle() } catch (error) { print([plain(error instanceof Error ? error.message : String(error))]) }
+      return
+    }
     if (key.ctrl && key.name === "p") {
       key.preventDefault()
       key.stopPropagation()
@@ -372,6 +401,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       selectedChoice = index >= 0 ? index : 0
     }
     if (!pending) choiceRequestId = undefined
+    outputs.sync(state, opts.settings.config.showThinking)
     flushConversation(state)
     updateFooter(state)
   }
@@ -391,6 +421,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     wasFlashing = flashing
   }, 250)
 
+  const stopChipColors = watchChipColors(renderer, opts.settings.config.theme, () => updateFooter(opts.runtime.snapshot()))
   updateFooter(opts.runtime.snapshot())
   renderer.on("resize", () => { composer.refresh(); updateFooter(opts.runtime.snapshot()) })
   onState()
@@ -407,6 +438,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   if (opts.initialTask) void submit(opts.initialTask)
 
   await done
+  stopChipColors()
   unsubscribe()
   composer.dispose()
   return result

@@ -24,6 +24,8 @@ export type MemoryResult = {
   ok: boolean
   message: string
   ref?: string
+  /** Immutable source snapshot for human expansion; not an additional model view. */
+  outputRef?: string
   evicted: string[]
 }
 
@@ -159,6 +161,7 @@ export class WorkspaceMemory {
         ok: true,
         message: `Loaded ${loaded.live ? "LIVE" : "READ_ONLY"} ${loaded.title} · ${loaded.live ? `current ${loaded.fileRef}` : `ref ${loaded.sourceRef}`} · snapshot ${view.versionRef}${view.atEnd ? "" : "; continuation is in working context"}.`,
         ref: loaded.live ? loaded.fileRef : loaded.sourceRef,
+        outputRef: this.store.get(view.versionRef).snapshotRef as string,
         evicted,
       }
     } catch (error) {
@@ -1174,6 +1177,7 @@ export class WorkspaceMemory {
       ok: true,
       message: `Edited ${path} at guarded base; loaded version ${promoted.versionRef} (post-check external races remain possible).`,
       ref: loaded.fileRef,
+      outputRef: this.store.get(promoted.versionRef).snapshotRef as string,
       evicted,
     }
   }

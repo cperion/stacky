@@ -14,6 +14,8 @@ export type CommandContext = {
   print: (text: string) => void
   switchUi: (mode: UiMode) => void
   quit: () => void
+  expandOutput?: (target: string) => void
+  compactOutput?: () => void
 }
 
 export type Command = {
@@ -25,6 +27,10 @@ export type Command = {
 }
 
 const COMMANDS: Command[] = [
+  { name: "expand", usage: "/expand [thinking|tools|#number|ref]", description: "expand a thinking/tool block (Ctrl+O)",
+    run: (arg, ctx) => { if (ctx.expandOutput) ctx.expandOutput(arg.trim()); else ctx.print("Output expansion is unavailable here.") } },
+  { name: "compact", usage: "/compact", description: "close expanded output (Ctrl+O)",
+    run: (_arg, ctx) => ctx.compactOutput?.() },
   {
     name: "help",
     usage: "/help",

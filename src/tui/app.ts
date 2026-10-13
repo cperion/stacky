@@ -2,11 +2,12 @@ import { BoxRenderable, createCliRenderer, dim, TextRenderable } from "@opentui/
 import type { AgentRuntime } from "../agent/runtime.ts"
 import type { AgentState } from "../agent/types.ts"
 import { TaskPane } from "./task-pane.ts"
+import { OutputBlocks, OutputViewer } from "./output.ts"
 import { ChatPane } from "./chat-pane.ts"
 import { FilePane } from "./file-pane.ts"
 import { MenuOverlay } from "./menu.ts"
 import { buildSettingsMenu, type MenuContext } from "./menus.ts"
-import { applyTheme, theme } from "./theme.ts"
+import { applyTheme, theme, watchChipColors } from "./theme.ts"
 import { concat } from "./render.ts"
 import { runCommand, type CommandContext } from "./commands.ts"
 import { renderStatusLine, TOOL_FLASH_MS } from "./status.ts"
@@ -58,7 +59,9 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
 
   const taskPane = new TaskPane(renderer, { width: "26%" })
   let selectedChoice = 0
+  const outputs = new OutputBlocks((ref) => opts.runtime.inspectOutput(ref))
   const chatPane = new ChatPane(renderer, {
+    outputs,
     onSubmit: (text) => handleSubmit(text),
     canSubmit: (text) => text.trim().startsWith("/") || !opts.runtime.isRunning || opts.runtime.snapshot().mode === "waiting_for_user",
     provider: () => opts.settings.config.provider,
@@ -72,6 +75,9 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     height: 1,
   })
   const menu = new MenuOverlay(renderer)
+  const outputViewer = new OutputViewer(renderer, outputs, (open) => {
+    if (open) { menu.close(); chatPane.input.blur() } else chatPane.focus()
+  })
 
   main.add(taskPane.box)
   main.add(chatPane.box)
@@ -79,6 +85,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   outer.add(main)
   outer.add(footer)
   outer.add(menu.box)
+  outer.add(outputViewer.box)
   renderer.root.add(outer)
 
   let showHistory = false
@@ -100,6 +107,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     taskPane.update(state, showHistory)
     chatPane.update(state, selectedChoice, opts.settings.config.showThinking)
     filePane.update(state, opts.settings.config.fileBudgetTokens)
+    outputViewer.refresh()
 
     // The border reflects what the agent needs from you.
     const busy = state.streaming?.active === true
@@ -163,6 +171,8 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     print: (text) => opts.runtime.note(text),
     switchUi: menuContext.switchUi,
     quit: menuContext.quit,
+    expandOutput: (target) => outputViewer.open(target),
+    compactOutput: () => outputViewer.close(),
   }
 
   function setMenuOpen(open: boolean): void {
@@ -231,6 +241,13 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   }
 
   renderer.keyInput.on("keypress", async (key) => {
+    if (outputViewer.isOpen && key.name === "escape" && opts.runtime.isRunning) opts.runtime.interrupt()
+    if (outputViewer.handleKey(key)) return
+    if (key.ctrl && key.name === "o") {
+      key.preventDefault(); key.stopPropagation()
+      try { outputViewer.toggle() } catch (error) { opts.runtime.note(error instanceof Error ? error.message : String(error)) }
+      return
+    }
     // While the menu is open it owns the keyboard. Vim motions apply here.
     if (menu.isOpen) {
       key.preventDefault()
@@ -352,6 +369,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     requestRender()
   })
 
+  const stopChipColors = watchChipColors(renderer, opts.settings.config.theme, requestRender)
   renderer.on("resize", () => {
     layout()
     menu.relayout()
@@ -372,6 +390,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
 
   await done
   disposed = true
+  stopChipColors()
   unsubscribe()
   chatPane.composer.dispose()
   return result

@@ -93,6 +93,6 @@ export function renderStatusLine(state: AgentState, label: string, width: number
 
 export function renderChip(chip: Chip): Part {
   const label = ` ${chip.label} `
-  if (chip.bar && chip.text) return bold(bg(chip.bar)(fg(chip.text)(label)))
+  if (chip.bar && chip.text) return bg(chip.bar)(fg(chip.text)(label))
   return reverse(bold(label))
 }

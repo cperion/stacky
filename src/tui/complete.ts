@@ -10,6 +10,7 @@ const ARGUMENTS: Record<string, string[]> = {
   ui: ["repl", "panes"],
   thinking: ["on", "off"],
   "thinking-blocks": ["on", "off"],
+  expand: ["thinking", "tools"],
   dashboard: ["on", "off"],
   login: ["chatgpt"],
   logout: ["chatgpt"],
