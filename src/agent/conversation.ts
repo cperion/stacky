@@ -14,7 +14,9 @@ export function estimateTokens(text: string): number {
 export class ConversationBuffer {
   private items: ConversationEntry[] = []
 
-  constructor(private budgetTokens = 32_000) {}
+  constructor(private budgetTokens = 50_000) {}
+
+  get budget(): number { return this.budgetTokens }
 
   setBudget(tokens: number): void {
     this.budgetTokens = tokens

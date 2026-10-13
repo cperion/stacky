@@ -160,7 +160,8 @@ files, logs, search results, history and pinned instructions. Pinned-only overfl
 is the explicit exception described above. The existing configuration name is retained
 for compatibility; the menu calls it the working-view budget.
 
-- Default total: 24,000 estimated tokens.
+- Default working-view LRU total: 100,000 estimated tokens.
+- Default conversation history: 50,000 estimated tokens (a separate budget).
 - Default individual view: at most 4,096 estimated tokens.
 - Explicit reads may request 128–24,000, capped by the total budget.
 - The estimate is approximately four characters per token, not provider-exact

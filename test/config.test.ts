@@ -23,6 +23,8 @@ describe("config store", () => {
     expect(config.provider).toBe("deepseek")
     expect(config.model).toBe("deepseek-flash")
     expect(config.thinking).toBe(false)
+    expect(config.fileBudgetTokens).toBe(100_000)
+    expect(config.conversationBudgetTokens).toBe(50_000)
   })
 
   test("round-trips through disk", () => {

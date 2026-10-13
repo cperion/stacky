@@ -101,14 +101,14 @@ export class AgentRuntime {
     this.cwd = opts.cwd
     this.llm = opts.llm
     this.bus = opts.bus ?? new EventBus()
-    this.conversation = new ConversationBuffer(opts.conversationBudgetTokens ?? 32_000)
+    this.conversation = new ConversationBuffer(opts.conversationBudgetTokens ?? 50_000)
     this.ownsStore = !opts.memoryStore
     this.store = opts.memoryStore ?? new MemoryStore(opts.memoryDirectory ?? join(
       process.env.STACKY_HISTORY ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "stacky", "history"),
       randomUUID(),
     ))
     this.history = new FrameHistory(this.store, this.agentId)
-    this.files = new WorkspaceMemory({ cwd: opts.cwd, store: this.store, budgetTokens: opts.fileBudgetTokens ?? 24_000,
+    this.files = new WorkspaceMemory({ cwd: opts.cwd, store: this.store, budgetTokens: opts.fileBudgetTokens ?? 100_000,
       resolveDocument: (ref, find) => this.history.resolve(ref, find) })
     this.maxProtocolErrors = opts.maxProtocolErrors ?? 3
     this.maxStepsPerRun = opts.maxStepsPerRun ?? 80
@@ -701,7 +701,7 @@ export class AgentRuntime {
       maxStackDepth: this.maxStackDepth,
       maxProtocolErrors: this.maxProtocolErrors,
       fileBudgetTokens: this.files.budgetTokens,
-      conversationBudgetTokens: this.files.budgetTokens,
+      conversationBudgetTokens: this.conversation.budget,
     })
 
     child.files.inheritInstructions(this.files)

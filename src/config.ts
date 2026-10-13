@@ -30,8 +30,8 @@ export function defaultConfig(): StackyConfig {
     ui: "repl",
     replDashboard: true,
     theme: "auto",
-    fileBudgetTokens: 24_000,
-    conversationBudgetTokens: 32_000,
+    fileBudgetTokens: 100_000,
+    conversationBudgetTokens: 50_000,
   }
 }
 

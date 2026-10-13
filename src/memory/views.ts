@@ -16,7 +16,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { estimateTokens } from "../agent/conversation.ts"
 import { MemoryStore } from "./store.ts"
 
-const DEFAULT_BUDGET = 24_000
+const DEFAULT_BUDGET = 100_000
 const DEFAULT_VIEW_BUDGET = 4_096
 const MIN_VIEW_TOKENS = 24
 

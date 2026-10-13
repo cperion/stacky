@@ -35,7 +35,7 @@ export class FileWorkingSet {
 
   constructor(opts: FileWorkingSetOptions) {
     this.cwd = opts.cwd
-    this.budgetTokens = opts.budgetTokens ?? 24_000
+    this.budgetTokens = opts.budgetTokens ?? 100_000
     this.maxFileBytes = opts.maxFileBytes ?? 2_000_000
   }
 

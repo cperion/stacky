@@ -131,7 +131,7 @@ stacky  ·  REPL mode. Type a task, or /help for commands.
 
 TASK   Fix token expiry parsing
 ·      Fix the expiry comparison
-FILES  2 · 7.0k / 24.0k tokens · src/token.ts · tests/token.test.ts
+CONTEXT 2 · 7.0k / 100.0k tokens · src/token.ts · tests/token.test.ts
 ❯ _
 
 
@@ -279,8 +279,8 @@ Settings
   Thinking           off
   Show thinking      on
   ── Context ──
-  Working-view budget 24000
-  Conversation budget 32000
+  Working-view budget 100000
+  Conversation budget 50000
   ── Session ──
   Reset session
   Quit
@@ -349,8 +349,8 @@ and network-gateway troubleshooting.
 --list-models              fetch provider lists as JSON (optionally --provider); no TUI
 --thinking                 keep the model's reasoning mode on (forces toolChoice auto)
 --cwd <path>               workspace root (default: cwd)
---file-budget <tokens>     shared working-view budget (default 24000)
---conversation-budget <t>  conversation budget (default 32000)
+--file-budget <tokens>     shared working-view budget (default 100000)
+--conversation-budget <t>  conversation budget (default 50000)
 --session <path>           persist/restore task state as JSON
 --trace <path>             append a JSONL execution trace
 --config <path>            settings file (default: ~/.config/stacky/config.json)

@@ -257,8 +257,8 @@ Options:
                           Exit 0 only on fresh API responses; failures include diagnostics
   --thinking               Keep the model's reasoning mode on (forces toolChoice auto)
   --cwd <path>             Workspace root (default: current directory)
-  --file-budget <tokens>   Shared working-view budget (estimated tokens; default: 24000)
-  --conversation-budget <tokens>  Conversation token budget (default: 32000)
+  --file-budget <tokens>   Shared working-view budget (estimated tokens; default: 100000)
+  --conversation-budget <tokens>  Conversation token budget (default: 50000)
   --config <path>          Config file (default: ${configPath()})
   --ui <mode>              panes | repl (default: repl)
   --theme <mode>           auto | dark | light (light = black on white)

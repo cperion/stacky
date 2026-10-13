@@ -13,8 +13,8 @@ export type MenuContext = SettingsController & {
   quit: () => void
 }
 
-const FILE_BUDGETS = ["8000", "16000", "24000", "48000", "96000"]
-const CONVERSATION_BUDGETS = ["16000", "32000", "64000", "128000"]
+const FILE_BUDGETS = ["24000", "50000", "100000", "150000", "200000"]
+const CONVERSATION_BUDGETS = ["16000", "32000", "50000", "100000", "150000"]
 
 /** The settings menu, opened with Ctrl+P. */
 export function buildSettingsMenu(ctx: MenuContext): MenuItem[] {
