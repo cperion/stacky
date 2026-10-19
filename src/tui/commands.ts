@@ -33,6 +33,12 @@ const COMMANDS: Command[] = [
     run: (_arg, ctx) => ctx.compactOutput?.() },
   { name: "pause", usage: "/pause", description: "pause the running agent, keeping the stack and views",
     run: (_arg, ctx) => { ctx.print(ctx.runtime.pause() ? "Paused. /resume to continue." : "Nothing is running.") } },
+  { name: "steer", usage: "/steer <text>", description: "send guidance to the running agent at its next step",
+    run: (arg, ctx) => {
+      const text = arg.trim()
+      if (!text) { ctx.print("Usage: /steer <text>"); return }
+      ctx.print(ctx.runtime.steer(text) ? "Steering queued for the next model call." : "Nothing is running; send it as a normal message.")
+    } },
   { name: "resume", usage: "/resume", description: "resume the paused agent where it stopped",
     run: async (_arg, ctx) => {
       if (!ctx.runtime.isPaused) { ctx.print("Not paused."); return }

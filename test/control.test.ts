@@ -210,3 +210,78 @@ describe("paused status", () => {
     expect(statusChip(state({})).label).toBe("IDLE")
   })
 })
+
+/** Step 1 runs a tool; step 2 records the prompt it saw. */
+class SteeringLLM implements LLMClient {
+  readonly label = "steering"
+  calls = 0
+  inputs: ModelInput[] = []
+
+  async step(input: ModelInput, _handlers?: StreamHandlers, _signal?: AbortSignal): Promise<ModelAction> {
+    this.inputs.push(input)
+    this.calls += 1
+    if (this.calls === 1) return { tool: "bash", input: { command: "echo step-one" } }
+    return { tool: "user", input: { message: "done", response: "none" } }
+  }
+}
+
+describe("steering", () => {
+  test("live steering is delivered at the next model call, not mid-call", async () => {
+    const llm = new SteeringLLM()
+    const runtime = makeRuntime(llm)
+    const logPath = join(dir, "session.control.jsonl")
+    runtime.attachControlLog(logPath)
+
+    const run = runtime.request("start")
+    expect(runtime.steer("use the existing parser")).toBe(true)
+    await run
+
+    expect(llm.calls).toBe(2)
+    const second = llm.inputs[1]!
+    expect(second.prompt).toContain("use the existing parser")
+    // The in-flight first prompt could not have seen it.
+    expect(llm.inputs[0]!.prompt).not.toContain("use the existing parser")
+    expect(runtime.snapshot().conversation.some((entry) => entry.text === "use the existing parser")).toBe(true)
+    expect(readControlRecords(logPath).map((record) => record.kind)).toContain("steer")
+  })
+
+  test("steering is rejected when idle, empty, or paused", () => {
+    const runtime = makeRuntime(new SteeringLLM())
+    expect(runtime.steer("no run")).toBe(false)
+    expect(runtime.steer("   ")).toBe(false)
+  })
+
+  test("steering that arrives after the last boundary is kept, not lost", async () => {
+    let runtimeRef: AgentRuntime | undefined
+    const llm: LLMClient = {
+      label: "late-steer",
+      async step(): Promise<ModelAction> {
+        runtimeRef?.steer("late guidance")
+        return { tool: "user", input: { message: "done", response: "none" } }
+      },
+    }
+    const runtime = makeRuntime(llm)
+    runtimeRef = runtime
+    await runtime.request("start")
+    expect(runtime.isRunning).toBe(false)
+    expect(runtime.snapshot().conversation.some((entry) => entry.source === "steering" && entry.text === "late guidance")).toBe(true)
+  })
+
+  test("steering text is model-visible while pause records are not", () => {
+    const prompt = buildUserPrompt({
+      mode: "execute",
+      conversation: [
+        { id: "1", at: 0, role: "user", text: "⏸ paused", tokens: 1, source: "control", modelVisible: false },
+        { id: "2", at: 0, role: "user", text: "use the existing parser", tokens: 1, source: "steering" },
+      ],
+      stack: [],
+      files: [],
+      fileBudgetTokens: 100,
+      fileUsedTokens: 0,
+      observation: "",
+      workingContext: "",
+    })
+    expect(prompt).toContain("use the existing parser")
+    expect(prompt).not.toContain("⏸ paused")
+  })
+})

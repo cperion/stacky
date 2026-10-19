@@ -172,6 +172,7 @@ command runs. Slash commands include:
 /help                 list commands
 /pause                pause the running agent at the next step
 /resume               resume a paused agent where it stopped
+/steer <text>         send guidance to the running agent at its next step
 /model [provider/id]  show or choose a model; /model refresh forces discovery
 /task                 full task stack and checklist
 /files                resident live file views
@@ -278,13 +279,19 @@ transcript are kept. The status chip shows `PAUSED`. `/resume` (or simply typing
 a message) continues the same conversation — nothing is replayed and no frame is
 restarted.
 
+While the agent is running, typing a message and pressing Enter (or
+`/steer <text>`) steers it. The text is queued and delivered as a normal user
+entry at the **next model call** — never during the call already in flight. If
+it arrives after the final model call of a turn, it is kept and becomes context
+for the next turn instead of being dropped.
+
 Every control action is a durable, append-only record in
 `<session>.control.jsonl` and is rendered in the transcript as a user entry, so
 the run reads as one conversation in which the human also speaks:
 
 - `pause` / `resume` records are control-only and **never enter the model prompt**;
-- `steer` / `amend-goal` / `answer` records are model-visible when those actions
-  are enabled;
+- `steer` records are model-visible: the guidance is ordinary context from the
+  next model call onward;
 - closing the process and restoring the session keeps the transcript; the control
   log lets the resumed session tell what the human already decided.
 

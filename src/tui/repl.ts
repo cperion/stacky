@@ -66,7 +66,9 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
   const composer = new Composer(renderer, {
     provider: () => opts.settings.config.provider,
     onSubmit: (value) => { void submit(value) },
-    canSubmit: (text) => text.trim().startsWith("/") || !opts.runtime.isRunning || opts.runtime.snapshot().mode === "waiting_for_user",
+    // While the agent runs, typed text steers it; only an empty prompt is blocked
+    // (except for the choice list, where an empty submit accepts the selection).
+    canSubmit: (text) => text.trim().length > 0 || (opts.runtime.snapshot().mode === "waiting_for_user" && (opts.runtime.snapshot().userRequest?.choices?.length ?? 0) > 0),
     onHeightChange: () => updateFooter(opts.runtime.snapshot()),
   })
   const input = composer.input
@@ -182,7 +184,7 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     const liveOutput = outputs.renderLive(rendererWidth())
     liveBlock.visible = Boolean(liveOutput)
     liveBlock.content = liveOutput
-    const hint = state.running ? "Esc pause · Ctrl+O expand" : state.paused ? "Enter resume · /resume" : "Ctrl+O expand · /help"
+    const hint = state.running ? "Enter steer · Esc pause" : state.paused ? "Enter resume · /resume" : "Ctrl+O expand · /help"
     status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking, hint)
     live.content = liveContent(state)
     const liveRows = countLines(live.content)
@@ -293,6 +295,12 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
         }
       }
     } else if (trimmed === "") {
+      return
+    }
+
+    if (opts.runtime.isRunning) {
+      if (opts.runtime.steer(text)) print([dim("steering → delivered at the next model call")])
+      else print([dim("The run is finishing; nothing was steered.")])
       return
     }
 

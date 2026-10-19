@@ -63,7 +63,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   const chatPane = new ChatPane(renderer, {
     outputs,
     onSubmit: (text) => handleSubmit(text),
-    canSubmit: (text) => text.trim().startsWith("/") || !opts.runtime.isRunning || opts.runtime.snapshot().mode === "waiting_for_user",
+    canSubmit: (text) => text.trim().length > 0 || (opts.runtime.snapshot().mode === "waiting_for_user" && (opts.runtime.snapshot().userRequest?.choices?.length ?? 0) > 0),
     provider: () => opts.settings.config.provider,
   })
   const filePane = new FilePane(renderer, { width: "26%" })
@@ -199,6 +199,11 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
   }
 
   async function submit(text: string): Promise<void> {
+    if (opts.runtime.isRunning) {
+      if (!opts.runtime.steer(text)) opts.runtime.note("The run is finishing; nothing was steered.")
+      render()
+      return
+    }
     try {
       await opts.runtime.request(text)
     } catch (error) {
@@ -402,7 +407,7 @@ function buildFooter(
   if (opts.notice && state.conversation.length === 0) return concat([dim(` ${opts.notice}`)])
 
   const hint = state.running
-    ? "Esc pause"
+    ? "Enter steer · Esc pause"
     : state.paused
       ? "Enter resume · /resume"
       : opts.width >= 100

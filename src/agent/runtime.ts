@@ -90,6 +90,7 @@ export class AgentRuntime {
   private interrupted = false
   private pausedFlag = false
   private controlLog?: string
+  private steeringQueue: string[] = []
   private activeChild?: AgentRuntime
 
   private readonly maxProtocolErrors: number
@@ -226,20 +227,50 @@ export class AgentRuntime {
     })
   }
 
+  /** Write one control record to the durable log; transcript entries are added separately. */
+  private logControl(record: ControlRecord): void {
+    if (!this.controlLog) return
+    try {
+      appendControlRecord(this.controlLog, record)
+    } catch {
+      // The transcript is still authoritative for this process.
+    }
+  }
+
   /** Record one human control action: durable log plus a user-facing transcript entry. */
   private recordControl(record: ControlRecord): void {
-    if (this.controlLog) {
-      try {
-        appendControlRecord(this.controlLog, record)
-      } catch {
-        // The transcript below is still authoritative for this process.
-      }
-    }
+    this.logControl(record)
     const modelVisible = record.kind === "steer" || record.kind === "amend-goal" || record.kind === "answer"
     this.addEntry("user", formatControlRecord(record), {
       source: record.kind === "steer" ? "steering" : "control",
       ...(modelVisible ? {} : { modelVisible: false }),
     })
+  }
+
+  /**
+   * Queue human guidance for the running turn. It is delivered as a normal user
+   * entry at the next step boundary, so it cannot disturb the model call that is
+   * already in flight. Returns false when there is nothing to steer.
+   */
+  steer(text: string): boolean {
+    const trimmed = text.trim()
+    if (!trimmed) return false
+    if (!this.running || this.pausedFlag || this.mode === "waiting_for_user") return false
+    this.logControl({ kind: "steer", id: randomUUID(), at: Date.now(), text: trimmed, scope: "round" })
+    this.steeringQueue.push(trimmed)
+    return true
+  }
+
+  get pendingSteering(): number {
+    return this.steeringQueue.length
+  }
+
+  /** Deliver queued steering as ordinary conversation entries. */
+  private drainSteering(): void {
+    if (this.steeringQueue.length === 0) return
+    const queued = this.steeringQueue
+    this.steeringQueue = []
+    for (const text of queued) this.addEntry("user", text, { source: "steering" })
   }
 
   /** Swap the model. Only allowed while idle, so a turn is never interrupted. */
@@ -285,6 +316,7 @@ export class AgentRuntime {
     this.protocolErrors = 0
     this.mode = "push"
     this.pausedFlag = false
+    this.steeringQueue = []
     this.workingContext = ""
     this.emitState()
   }
@@ -458,6 +490,7 @@ export class AgentRuntime {
       while (steps < this.maxStepsPerRun) {
         if (this.interrupted) return
         if (this.mode === "waiting_for_user") break
+        this.drainSteering()
         steps += 1
 
         const result = await this.invokeModel()
@@ -480,6 +513,8 @@ export class AgentRuntime {
     } finally {
       this.running = false
       this.activeTool = undefined
+      // Steering that arrived too late to be consumed is kept for the next turn.
+      this.drainSteering()
       this.emitState()
     }
   }
