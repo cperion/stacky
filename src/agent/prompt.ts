@@ -89,7 +89,7 @@ export function buildUserPrompt(input: PromptInput): string {
 }
 
 function renderConversation(entries: readonly ConversationEntry[]): string {
-  const visible = entries.filter((entry) => entry.role !== "thinking" && entry.role !== "note" && entry.role !== "subagent")
+  const visible = entries.filter((entry) => entry.role !== "thinking" && entry.role !== "note" && entry.role !== "subagent" && entry.modelVisible !== false)
   if (visible.length === 0) return "# CONVERSATION\n(empty)"
   const lines = visible.map((entry) => {
     const body = entry.role === "action" ? entry.text.split("\n")[0]! : entry.text

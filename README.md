@@ -82,7 +82,7 @@ bun run src/main.ts --headless --task "add a slugify() helper and test it"
 | `j` / `k` | move down / up through choices and menus |
 | `h` / `l` | back / forward in menus; `l` selects a choice |
 | `g` / `G` | jump to the top / bottom of a menu |
-| `Esc` | close a menu; otherwise interrupt active work or dismiss completion — never erase a draft |
+| `Esc` | pause active work; close a menu; otherwise dismiss completion — never erase a draft |
 | `Ctrl+P` | command palette in REPL; settings menu in panes |
 | `Ctrl+T` | toggle closed-frame history in the task pane |
 | `Ctrl+O` | expand the latest tool/thinking block; press again to compact |
@@ -170,6 +170,8 @@ command runs. Slash commands include:
 
 ```
 /help                 list commands
+/pause                pause the running agent at the next step
+/resume               resume a paused agent where it stopped
 /model [provider/id]  show or choose a model; /model refresh forces discovery
 /task                 full task stack and checklist
 /files                resident live file views
@@ -267,6 +269,24 @@ The model is called with `streamText`, so the UI updates as the model works:
   the call, before it is executed.
 - A spinner and elapsed status appear in the footer while a turn is in flight;
   rendering is throttled so token streams stay smooth.
+
+## Pausing and steering
+
+`Esc` or `/pause` pauses at the next opportunity: the in-flight model call is
+aborted and its partial turn discarded, while the stack, file views and
+transcript are kept. The status chip shows `PAUSED`. `/resume` (or simply typing
+a message) continues the same conversation — nothing is replayed and no frame is
+restarted.
+
+Every control action is a durable, append-only record in
+`<session>.control.jsonl` and is rendered in the transcript as a user entry, so
+the run reads as one conversation in which the human also speaks:
+
+- `pause` / `resume` records are control-only and **never enter the model prompt**;
+- `steer` / `amend-goal` / `answer` records are model-visible when those actions
+  are enabled;
+- closing the process and restoring the session keeps the transcript; the control
+  log lets the resumed session tell what the human already decided.
 
 ## Settings, models and config
 

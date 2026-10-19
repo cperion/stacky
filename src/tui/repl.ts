@@ -182,7 +182,8 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
     const liveOutput = outputs.renderLive(rendererWidth())
     liveBlock.visible = Boolean(liveOutput)
     liveBlock.content = liveOutput
-    status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking, "Ctrl+O expand · /help")
+    const hint = state.running ? "Esc pause · Ctrl+O expand" : state.paused ? "Enter resume · /resume" : "Ctrl+O expand · /help"
+    status.content = renderStatusLine(state, opts.runtime.llmLabel, rendererWidth(), opts.settings.config.thinking, hint)
     live.content = liveContent(state)
     const liveRows = countLines(live.content)
     const available = Math.max(0, renderer.terminalHeight - composer.height - liveRows - 6)
@@ -319,11 +320,11 @@ export async function runRepl(opts: ReplOptions): Promise<UiResult> {
       composer.openCommands()
       return
     }
-    // Esc always stops active work; otherwise it dismisses completion, preserving the draft.
+    // Esc pauses active work; otherwise it dismisses completion, preserving the draft.
     if (key.name === "escape" && opts.runtime.isRunning) {
       key.preventDefault()
       key.stopPropagation()
-      opts.runtime.interrupt()
+      opts.runtime.pause()
       return
     }
     if (input.plainText.length > 0 && composer.handleKey(key)) return

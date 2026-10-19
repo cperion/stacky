@@ -3,6 +3,7 @@ import { parseArgs } from "node:util"
 import { resolve } from "node:path"
 import { AgentRuntime } from "./agent/runtime.ts"
 import { attachSessionAutosave, loadSession, saveSession } from "./agent/persistence.ts"
+import { controlLogPathFor } from "./agent/control.ts"
 import { attachTraceLogger } from "./agent/logger.ts"
 import { buildLLM } from "./llm/factory.ts"
 import { DemoLLM } from "./llm/scripted.ts"
@@ -109,6 +110,7 @@ let resumeNote = ""
 let stopAutosave: (() => void) | undefined
 if (values.session) {
   const sessionPath = resolve(values.session)
+  runtime.attachControlLog(controlLogPathFor(sessionPath))
   if (loadSession(runtime, sessionPath)) {
     const snapshot = runtime.snapshot()
     resumeNote = `resumed session: ${snapshot.stack.length} open frame(s), ${snapshot.closedFrames.length} closed`

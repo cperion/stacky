@@ -31,6 +31,14 @@ const COMMANDS: Command[] = [
     run: (arg, ctx) => { if (ctx.expandOutput) ctx.expandOutput(arg.trim()); else ctx.print("Output expansion is unavailable here.") } },
   { name: "compact", usage: "/compact", description: "restore inline blocks to 20 lines",
     run: (_arg, ctx) => ctx.compactOutput?.() },
+  { name: "pause", usage: "/pause", description: "pause the running agent, keeping the stack and views",
+    run: (_arg, ctx) => { ctx.print(ctx.runtime.pause() ? "Paused. /resume to continue." : "Nothing is running.") } },
+  { name: "resume", usage: "/resume", description: "resume the paused agent where it stopped",
+    run: async (_arg, ctx) => {
+      if (!ctx.runtime.isPaused) { ctx.print("Not paused."); return }
+      ctx.print("Resuming…")
+      await ctx.runtime.resume()
+    } },
   {
     name: "help",
     usage: "/help",

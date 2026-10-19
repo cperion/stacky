@@ -24,6 +24,7 @@ import { ProtocolError, type LLMClient, type ModelInput, type StreamHandlers } f
 import { createMetrics } from "./metrics.ts"
 import { describeToolCall } from "./format-action.ts"
 import { runBash } from "../tools/bash.ts"
+import { appendControlRecord, formatControlRecord, pauseControl, resumeControl, type ControlRecord } from "./control.ts"
 
 export type AgentRuntimeOptions = {
   cwd: string
@@ -87,6 +88,8 @@ export class AgentRuntime {
   private streaming?: StreamingState
   private abortController?: AbortController
   private interrupted = false
+  private pausedFlag = false
+  private controlLog?: string
   private activeChild?: AgentRuntime
 
   private readonly maxProtocolErrors: number
@@ -173,6 +176,72 @@ export class AgentRuntime {
     })
   }
 
+  /** True while the run is paused; the state is kept and can be resumed exactly. */
+  get isPaused(): boolean {
+    return this.pausedFlag
+  }
+
+  /**
+   * Attach the append-only control log beside the session checkpoint. Without a
+   * log the control records still appear in the transcript, but a restarted
+   * session cannot tell what the human already decided.
+   */
+  attachControlLog(path: string): void {
+    this.controlLog = path
+  }
+
+  get controlLogPath(): string | undefined {
+    return this.controlLog
+  }
+
+  /**
+   * Pause at the next opportunity: stop the in-flight model call and discard the
+   * partial turn, while keeping the stack, views and transcript. Resume continues
+   * the same conversation; nothing is replayed and no round is restarted.
+   */
+  pause(): boolean {
+    if (!this.running || this.pausedFlag) return false
+    this.pausedFlag = true
+    this.recordControl(pauseControl())
+    this.interrupt()
+    this.emitState()
+    return true
+  }
+
+  /** Resume a paused run at the exact point it stopped. */
+  async resume(): Promise<boolean> {
+    if (!this.pausedFlag) return false
+    if (this.running) await this.waitForIdle()
+    this.pausedFlag = false
+    this.recordControl(resumeControl())
+    this.emitState()
+    await this.run()
+    return true
+  }
+
+  private async waitForIdle(): Promise<void> {
+    if (!this.running) return
+    await new Promise<void>((resolve) => {
+      const off = this.bus.on(() => { if (!this.running) { off(); resolve() } })
+    })
+  }
+
+  /** Record one human control action: durable log plus a user-facing transcript entry. */
+  private recordControl(record: ControlRecord): void {
+    if (this.controlLog) {
+      try {
+        appendControlRecord(this.controlLog, record)
+      } catch {
+        // The transcript below is still authoritative for this process.
+      }
+    }
+    const modelVisible = record.kind === "steer" || record.kind === "amend-goal" || record.kind === "answer"
+    this.addEntry("user", formatControlRecord(record), {
+      source: record.kind === "steer" ? "steering" : "control",
+      ...(modelVisible ? {} : { modelVisible: false }),
+    })
+  }
+
   /** Swap the model. Only allowed while idle, so a turn is never interrupted. */
   setLLM(llm: LLMClient): void {
     if (this.running) throw new Error("Cannot switch models while the agent is running.")
@@ -215,6 +284,7 @@ export class AgentRuntime {
     this.streaming = undefined
     this.protocolErrors = 0
     this.mode = "push"
+    this.pausedFlag = false
     this.workingContext = ""
     this.emitState()
   }
@@ -242,6 +312,7 @@ export class AgentRuntime {
     return {
       mode: this.mode,
       running: this.running,
+      ...(this.pausedFlag ? { paused: true } : {}),
       ...(this.activeTool ? { activeTool: this.activeTool } : {}),
       ...((this.activeToolSince ?? this.streaming?.startedAt)
         ? { phaseStartedAt: this.activeToolSince ?? this.streaming?.startedAt }
@@ -340,6 +411,17 @@ export class AgentRuntime {
     const trimmed = text.trim()
     if (!trimmed) return
 
+    if (this.pausedFlag) {
+      // Typing while paused is itself a resume with an instruction.
+      this.pausedFlag = false
+      this.recordControl(resumeControl())
+      this.addEntry("user", trimmed)
+      this.mode = this.stack.isEmpty ? "push" : "execute"
+      this.emitState()
+      await this.run()
+      return
+    }
+
     if (this.mode === "waiting_for_user" && this.userRequest) {
       const record = this.userRequest
       record.resolved = true
@@ -367,6 +449,7 @@ export class AgentRuntime {
   /** The automatic agent loop. Runs until a user boundary or a hard stop. */
   async run(): Promise<void> {
     if (this.running) return
+    if (this.pausedFlag) return
     this.running = true
     this.interrupted = false
     this.emitState()
@@ -477,7 +560,8 @@ export class AgentRuntime {
     if (controller.signal.aborted) {
       this.streaming = undefined
       this.bus.emit({ type: "model.call.aborted" })
-      this.addEntry("note", "interrupted by user")
+      // A pause announces itself through its control record; a plain interrupt is a note.
+      if (!this.pausedFlag) this.addEntry("note", "interrupted by user")
       this.emitState()
       return { kind: "stop" }
     }

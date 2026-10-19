@@ -287,7 +287,7 @@ export async function runApp(opts: AppOptions): Promise<UiResult> {
     if (key.name === "escape" && opts.runtime.isRunning) {
       key.preventDefault()
       key.stopPropagation()
-      opts.runtime.interrupt()
+      opts.runtime.pause()
       render()
       return
     }
@@ -401,6 +401,12 @@ function buildFooter(
 ): ReturnType<typeof concat> {
   if (opts.notice && state.conversation.length === 0) return concat([dim(` ${opts.notice}`)])
 
-  const hint = state.running ? "Esc stop" : opts.width >= 100 ? "Tab complete · Ctrl+P settings · /help" : "/help"
+  const hint = state.running
+    ? "Esc pause"
+    : state.paused
+      ? "Enter resume · /resume"
+      : opts.width >= 100
+        ? "Tab complete · Ctrl+P settings · /help"
+        : "/help"
   return renderStatusLine(state, opts.label, opts.width - 1, opts.thinking, hint + (opts.showHistory ? " · history" : ""))
 }

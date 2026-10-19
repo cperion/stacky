@@ -35,6 +35,10 @@ function derivePhase(state: AgentState, now: number): Chip {
     return chip
   }
 
+  if (state.paused) {
+    return { label: "PAUSED", ...theme.chip.yellow }
+  }
+
   if (state.mode === "waiting_for_user") {
     const reason = (state.userRequest?.choices?.length ?? 0) > 0 ? "·choice" : "·reply"
     return { label: `WAIT ${reason}`, ...theme.chip.yellow }
@@ -81,7 +85,7 @@ export function renderStatusLine(state: AgentState, label: string, width: number
   const chip = statusChip(state)
   chip.label = clipText(chip.label, Math.max(1, width - 2))
   const remaining = Math.max(0, width - chip.label.length - 4)
-  const help = hint ?? (state.running ? "Esc stop" : width >= 100 ? "Tab complete · ⇧Enter newline · /help" : "/help")
+  const help = hint ?? (state.running ? "Esc pause" : state.paused ? "/resume to continue" : width >= 100 ? "Tab complete · ⇧Enter newline · /help" : "/help")
   const helpWidth = remaining > help.length + 24 ? help.length + 3 : 0
   const model = clipText(`${label}${thinking ? " · thinking" : ""}`, remaining - helpWidth)
   return concat([

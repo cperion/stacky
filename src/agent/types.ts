@@ -130,6 +130,10 @@ export type ConversationEntry = {
   /** Set on "subagent" entries: how deep the subagent is and what it was saying. */
   depth?: number
   subrole?: ConversationRole
+  /** Human control input (pause/resume/steer/retry/...) rendered as a user entry. */
+  source?: "control" | "steering"
+  /** False for control entries that must not enter the model prompt (pause/resume). */
+  modelVisible?: boolean
 }
 
 export type StreamingState = {
@@ -146,6 +150,8 @@ export type AgentState = {
   mode: AgentMode
   /** True while the automatic loop is running (model call or tool execution). */
   running: boolean
+  /** True when the user paused the loop; state is kept until resume. */
+  paused?: boolean
   /** Tool currently executing, if any. */
   activeTool?: string
   /** When the current phase (tool or model call) started, for elapsed feedback. */
