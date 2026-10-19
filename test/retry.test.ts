@@ -58,25 +58,22 @@ describe("fresh-context retry", () => {
     expect(before.stack).toHaveLength(1)
     expect(before.files.map((file) => file.path)).toContain("a.txt")
     const frameId = before.stack[0]!.id
-    expect(before.attempt).toBeUndefined()
 
     const result = await runtime.retry()
     expect(result.ok).toBe(true)
-    expect(result.message).toContain("attempt 2")
+    expect(result.message).toContain("fresh context")
 
     const after = runtime.snapshot()
-    expect(after.attempt).toBe(2)
     expect(after.stack).toHaveLength(1)
     expect(after.stack[0]!.id).toBe(frameId)
     expect(after.files).toHaveLength(0) // fresh attention
     expect(after.closedFrames).toHaveLength(before.closedFrames.length)
     expect(after.conversation.some((entry) => entry.text.includes("please fix the greeting"))).toBe(false)
-    expect(after.conversation.every((entry) => entry.attempt === 2)).toBe(true)
-    expect(after.conversation.some((entry) => entry.text.includes("attempt 2"))).toBe(true)
+    expect(after.conversation.some((entry) => entry.text.includes("↻ retry"))).toBe(true)
 
     // The second attempt's first prompt must not see the discarded conversation.
     expect(picked).toHaveLength(1)
-    expect(picked[0]!.prompt).toContain("attempt 2")
+    expect(picked[0]!.prompt).toContain("↻ retry")
     expect(picked[0]!.prompt).not.toContain("please fix the greeting")
     expect(picked[0]!.prompt).toContain("Fix the greeting")
 
@@ -89,17 +86,14 @@ describe("fresh-context retry", () => {
     await runtime.request("start")
     const first = await runtime.retry()
     expect(first.ok).toBe(true)
-    expect(runtime.snapshot().attempt).toBe(2)
 
     const second = await runtime.retry()
     expect(second.ok).toBe(false)
     expect(second.message).toContain("No progress")
-    expect(runtime.snapshot().attempt).toBe(2)
     expect(runtime.snapshot().conversation.some((entry) => entry.role === "note" && entry.text.includes("retry refused"))).toBe(true)
 
     const forced = await runtime.retry({ force: true, reason: "try a different angle" })
     expect(forced.ok).toBe(true)
-    expect(runtime.snapshot().attempt).toBe(3)
   })
 
   test("retry is rejected with an empty stack, while running, or while paused", async () => {

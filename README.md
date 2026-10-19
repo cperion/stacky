@@ -309,14 +309,15 @@ the deliberate opposite of resume:
 | keeps | the partial turn is discarded, everything else stays | stack + todos + closed frames + archive |
 | use | the run was interrupted and should continue | the run went wrong and needs a clean mind |
 
-Attempts are numbered, tagged on every transcript entry, and marked with
-`↻ attempt N` in the transcript; the status chip shows `·aN` while attempt N is
-running.
+Each retry leaves a `↻ retry` marker in the transcript and a `retry` control
+record. There is deliberately **no retry counter**: retry spend belongs to the
+ralph round budget, where a retry is simply the next budgeted round marked as a
+retry of the previous one. Locally, the only limit is the no-progress guard.
 
-A retry is **refused** when the previous two attempts ended in the same work
-state — same open frames, same todo statuses, same closed count. Nothing new
-would be learned by a third identical attempt. The refusal is recorded in the
-transcript, and `/retry force` overrides it once with a stated reason.
+A retry is **refused** when the previous two tries ended in the same work state —
+same open frames, same todo statuses, same closed count. Nothing new would be
+learned by a third identical attempt. The refusal is recorded in the transcript,
+and `/retry force` overrides it once with a stated reason.
 
 ## Settings, models and config
 
