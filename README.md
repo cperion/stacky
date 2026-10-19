@@ -173,6 +173,7 @@ command runs. Slash commands include:
 /pause                pause the running agent at the next step
 /resume               resume a paused agent where it stopped
 /steer <text>         send guidance to the running agent at its next step
+/retry [force]        retry the open stack with a fresh context
 /model [provider/id]  show or choose a model; /model refresh forces discovery
 /task                 full task stack and checklist
 /files                resident live file views
@@ -294,6 +295,28 @@ the run reads as one conversation in which the human also speaks:
   next model call onward;
 - closing the process and restoring the session keeps the transcript; the control
   log lets the resumed session tell what the human already decided.
+
+### Retry vs resume
+
+`/retry` starts a **new attempt** of the current open stack with a fresh context:
+the conversation and file views are discarded, while the stack, its todo
+statuses, closed frames, project instructions and durable archive are kept. It is
+the deliberate opposite of resume:
+
+| | resume | retry |
+|---|---|---|
+| context | continues the same conversation exactly | rebuilt from the stack and a fresh view set |
+| keeps | the partial turn is discarded, everything else stays | stack + todos + closed frames + archive |
+| use | the run was interrupted and should continue | the run went wrong and needs a clean mind |
+
+Attempts are numbered, tagged on every transcript entry, and marked with
+`↻ attempt N` in the transcript; the status chip shows `·aN` while attempt N is
+running.
+
+A retry is **refused** when the previous two attempts ended in the same work
+state — same open frames, same todo statuses, same closed count. Nothing new
+would be learned by a third identical attempt. The refusal is recorded in the
+transcript, and `/retry force` overrides it once with a stated reason.
 
 ## Settings, models and config
 

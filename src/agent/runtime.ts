@@ -91,6 +91,9 @@ export class AgentRuntime {
   private pausedFlag = false
   private controlLog?: string
   private steeringQueue: string[] = []
+  private attempt = 1
+  private lastRunSignature: string | undefined
+  private previousAttemptSignature: string | undefined
   private activeChild?: AgentRuntime
 
   private readonly maxProtocolErrors: number
@@ -153,7 +156,7 @@ export class AgentRuntime {
     // Archive before FIFO eviction; child transcripts and private reasoning are not duplicated here.
     const eventRef = role === "thinking" || role === "subagent" ? undefined
       : this.history.event("conversation", { role, text, at, ...meta }, frameId)
-    const entry = this.conversation.add(role, text, { ...meta, frameId, eventRef }, at)
+    const entry = this.conversation.add(role, text, { ...meta, frameId, eventRef, attempt: this.attempt }, at)
     this.bus.emit({ type: "conversation.added", entry })
   }
 
@@ -261,8 +264,58 @@ export class AgentRuntime {
     return true
   }
 
-  get pendingSteering(): number {
-    return this.steeringQueue.length
+  get attemptNumber(): number {
+    return this.attempt
+  }
+
+  /**
+   * Fresh-context retry of the current open stack. The conversation and file
+   * views are discarded; the stack, its todo statuses, closed frames, durable
+   * archive and project instructions are kept. This is deliberately different
+   * from resume(): resume continues the same conversation exactly.
+   *
+   * Guard: two consecutive attempts that ended in the same stack state mean the
+   * fresh context bought nothing. A third retry is refused unless forced.
+   */
+  async retry(options: { force?: boolean; reason?: string } = {}): Promise<{ ok: boolean; message: string }> {
+    if (this.running) return { ok: false, message: "Cannot retry while the agent is running." }
+    if (this.pausedFlag) return { ok: false, message: "Cannot retry while paused; /resume or send a message first." }
+    if (this.mode === "waiting_for_user") return { ok: false, message: "Answer the pending question first." }
+    if (this.stack.isEmpty) return { ok: false, message: "Nothing to retry: the task stack is empty." }
+
+    const current = this.lastRunSignature ?? this.attemptSignature()
+    if (!options.force && this.previousAttemptSignature !== undefined && current === this.previousAttemptSignature) {
+      this.addEntry("note", "retry refused: no progress since the previous attempt; change the situation or use /retry force")
+      this.emitState()
+      return { ok: false, message: "No progress since the previous attempt. Change the situation, or use /retry force." }
+    }
+
+    this.attempt += 1
+    this.previousAttemptSignature = current
+    this.lastRunSignature = undefined
+
+    // Fresh context: keep the stack and archive, drop attention.
+    this.conversation.clear()
+    this.files.clear()
+    this.observation = ""
+    this.streaming = undefined
+    this.protocolErrors = 0
+    this.workingContext = ""
+    this.userRequest = undefined
+    this.logControl({ kind: "retry", id: randomUUID(), at: Date.now(), attempt: this.attempt, ...(options.reason ? { note: options.reason } : {}) })
+    this.addEntry("user", `↻ attempt ${this.attempt} — previous attempt discarded; continue from the open stack${options.reason ? ` — ${options.reason}` : ""}`, { source: "control" })
+    this.mode = "execute"
+    this.emitState()
+    await this.run()
+    return { ok: true, message: `Retry attempt ${this.attempt} started with a fresh context.` }
+  }
+
+  /** Stable fingerprint of the work state: open frames, their todos, closed count. */
+  private attemptSignature(): string {
+    return JSON.stringify({
+      frames: this.stack.list().map((frame) => ({ id: frame.id, todos: frame.todos.map((todo) => todo.status) })),
+      closed: this.closedFrames.length,
+    })
   }
 
   /** Deliver queued steering as ordinary conversation entries. */
@@ -317,6 +370,9 @@ export class AgentRuntime {
     this.mode = "push"
     this.pausedFlag = false
     this.steeringQueue = []
+    this.attempt = 1
+    this.lastRunSignature = undefined
+    this.previousAttemptSignature = undefined
     this.workingContext = ""
     this.emitState()
   }
@@ -345,6 +401,7 @@ export class AgentRuntime {
       mode: this.mode,
       running: this.running,
       ...(this.pausedFlag ? { paused: true } : {}),
+      ...(this.attempt > 1 ? { attempt: this.attempt } : {}),
       ...(this.activeTool ? { activeTool: this.activeTool } : {}),
       ...((this.activeToolSince ?? this.streaming?.startedAt)
         ? { phaseStartedAt: this.activeToolSince ?? this.streaming?.startedAt }
@@ -429,6 +486,9 @@ export class AgentRuntime {
     this.workingContext = ""
     this.observation = ""
     this.streaming = undefined
+    this.attempt = 1
+    this.lastRunSignature = undefined
+    this.previousAttemptSignature = undefined
     this.userRequest = data.userRequest
     if (data.metrics) Object.assign(this.metrics, data.metrics, { outcomes: { ...data.metrics.outcomes } })
 
@@ -472,6 +532,11 @@ export class AgentRuntime {
       throw new Error("Agent is already running; wait for it to yield before sending input.")
     }
 
+    // A new human instruction starts a new attempt chain.
+    this.attempt = 1
+    this.lastRunSignature = undefined
+    this.previousAttemptSignature = undefined
+
     this.addEntry("user", trimmed)
     this.mode = this.stack.isEmpty ? "push" : "execute"
     this.emitState()
@@ -513,6 +578,7 @@ export class AgentRuntime {
     } finally {
       this.running = false
       this.activeTool = undefined
+      this.lastRunSignature = this.attemptSignature()
       // Steering that arrived too late to be consumed is kept for the next turn.
       this.drainSteering()
       this.emitState()

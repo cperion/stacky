@@ -14,7 +14,7 @@ export type ControlRecord =
   | { kind: "pause"; id: string; at: number }
   | { kind: "resume"; id: string; at: number }
   | { kind: "steer"; id: string; at: number; text: string; scope: "round" | "next-round" }
-  | { kind: "retry"; id: string; at: number; round?: number; note?: string }
+  | { kind: "retry"; id: string; at: number; round?: number; attempt?: number; note?: string }
   | { kind: "abort"; id: string; at: number; round?: number }
   | { kind: "amend-goal"; id: string; at: number; text: string; revision: number }
   | { kind: "answer"; id: string; at: number; requestId: string; answer: string; choiceId?: string }
@@ -37,7 +37,7 @@ export function formatControlRecord(record: ControlRecord): string {
     case "steer":
       return `❯ steer (${record.scope}): ${record.text}`
     case "retry":
-      return `↻ retry${record.round === undefined ? "" : ` round ${record.round}`}${record.note ? ` — ${record.note}` : ""}`
+      return `↻ retry${record.attempt === undefined ? record.round === undefined ? "" : ` round ${record.round}` : ` attempt ${record.attempt}`}${record.note ? ` — ${record.note}` : ""}`
     case "abort":
       return `✕ aborted${record.round === undefined ? "" : ` round ${record.round}`}`
     case "amend-goal":

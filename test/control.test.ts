@@ -209,6 +209,11 @@ describe("paused status", () => {
     expect(statusChip(state({ paused: true })).label).toBe("PAUSED")
     expect(statusChip(state({})).label).toBe("IDLE")
   })
+
+  test("the chip shows the attempt number only after a retry", () => {
+    expect(statusChip(state({ running: true })).label).toBe("RUN")
+    expect(statusChip(state({ running: true, attempt: 2 })).label).toBe("RUN ·a2")
+  })
 })
 
 /** Step 1 runs a tool; step 2 records the prompt it saw. */

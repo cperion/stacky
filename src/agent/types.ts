@@ -134,6 +134,8 @@ export type ConversationEntry = {
   source?: "control" | "steering"
   /** False for control entries that must not enter the model prompt (pause/resume). */
   modelVisible?: boolean
+  /** Attempt number this entry belongs to (1-based; increments on retry). */
+  attempt?: number
 }
 
 export type StreamingState = {
@@ -152,6 +154,8 @@ export type AgentState = {
   running: boolean
   /** True when the user paused the loop; state is kept until resume. */
   paused?: boolean
+  /** Attempt number of the current fresh-context run (1-based). */
+  attempt?: number
   /** Tool currently executing, if any. */
   activeTool?: string
   /** When the current phase (tool or model call) started, for elapsed feedback. */

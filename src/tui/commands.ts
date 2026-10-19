@@ -33,6 +33,11 @@ const COMMANDS: Command[] = [
     run: (_arg, ctx) => ctx.compactOutput?.() },
   { name: "pause", usage: "/pause", description: "pause the running agent, keeping the stack and views",
     run: (_arg, ctx) => { ctx.print(ctx.runtime.pause() ? "Paused. /resume to continue." : "Nothing is running.") } },
+  { name: "retry", usage: "/retry [force]", description: "retry the open stack with a fresh context",
+    run: async (arg, ctx) => {
+      const result = await ctx.runtime.retry({ force: arg.trim() === "force" })
+      ctx.print(result.message)
+    } },
   { name: "steer", usage: "/steer <text>", description: "send guidance to the running agent at its next step",
     run: (arg, ctx) => {
       const text = arg.trim()

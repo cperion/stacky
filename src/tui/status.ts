@@ -22,6 +22,7 @@ export type Chip = { label: string; bar?: ColorInput; text?: ColorInput }
  */
 export function statusChip(state: AgentState, now = Date.now()): Chip {
   const chip = derivePhase(state, now)
+  if (state.attempt !== undefined && state.attempt > 1) chip.label += ` ·a${state.attempt}`
   if (!state.activeTool && state.lastTool && now - state.lastTool.at < TOOL_FLASH_MS) {
     chip.label += state.lastTool.ok ? " ✓" : " ✗"
   }
